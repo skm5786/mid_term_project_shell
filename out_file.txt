@@ -1,0 +1,3 @@
+Program starting. Reading from stdin:
+Line read: Hello from infile.txt
+Program finished.
