@@ -41,5 +41,6 @@ Pipeline* parse_pipeline(char *cmd_str);
  * @param pipeline The pipeline to free.
  */
 void free_pipeline(Pipeline *pipeline);
+char* execute_pipeline(Pipeline *pipeline);
 
 #endif // PIPE_HANDLER_H

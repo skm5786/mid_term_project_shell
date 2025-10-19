@@ -12,8 +12,10 @@ SOURCES := src/main.c \
            src/shell/command_exec.c \
 		   src/shell/redirect_handler.c \
 		   src/shell/pipe_handler.c \
+		   src/shell/multiwatch.c \
            src/utils/unicode_handler.c \
-           src/input/input_handler.c
+           src/input/input_handler.c \
+		   src/input/line_edit.c
 
 OBJECTS := $(patsubst src/%.c,$(OBJDIR)/%.o,$(SOURCES))
 

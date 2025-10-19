@@ -12,5 +12,6 @@
  * Returns NULL on failure or for commands with no output (like cd).
  */
 char* execute_command(Command *cmd, RedirectInfo *redir_info);
+int builtin_cd(Command *cmd);
 
 #endif // COMMAND_EXEC_H

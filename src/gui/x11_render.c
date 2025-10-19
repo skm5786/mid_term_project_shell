@@ -1,18 +1,14 @@
 // in src/gui/x11_render.c
-
 #include "x11_render.h"
-#include "tab_manager.h" // <-- ADD THIS INCLUDE HERE
+#include "tab_manager.h" // This include is correct here.
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 
-// ... text_buffer_init, text_buffer_free, text_buffer_append functions are unchanged ...
+// ... (your text_buffer functions are correct and unchanged) ...
 TextBuffer* text_buffer_init() {
     TextBuffer *buf = malloc(sizeof(TextBuffer));
-    if (!buf) {
-        perror("malloc");
-        return NULL;
-    }
+    if (!buf) { perror("malloc"); return NULL; }
     buf->line_count = 1;
     buf->cursor_line = 0;
     buf->cursor_col = 0;
@@ -45,9 +41,9 @@ void text_buffer_append(TextBuffer *buf, const char *text) {
 }
 
 
-// CHANGE: The function signature must match the header file exactly.
+// --- CHANGE ---
+// The function signature here MUST match the new declaration in the header file.
 void render_tabs(X11Context *ctx, struct TabManager *mgr) {
-    // Draw tab bar background (gray)
     XSetForeground(ctx->display, ctx->gc, 0xDDDDDD); // Light gray
     XFillRectangle(ctx->display, ctx->window, ctx->gc, 0, 0, ctx->width, TAB_BAR_HEIGHT);
 
@@ -72,7 +68,7 @@ void render_tabs(X11Context *ctx, struct TabManager *mgr) {
     }
 }
 
-// ... render_text_buffer is unchanged ...
+// ... (render_text_buffer is correct and unchanged) ...
 void render_text_buffer(X11Context *ctx, TextBuffer *buf) {
     XClearArea(ctx->display, ctx->window, 0, TAB_BAR_HEIGHT, ctx->width, ctx->height - TAB_BAR_HEIGHT, False);
     int font_height = ctx->font->ascent + ctx->font->descent;

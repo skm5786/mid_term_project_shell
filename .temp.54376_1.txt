@@ -1,0 +1,17 @@
+total 440
+-rw-r--r--@ 1 sumit  staff   1402 Oct 17 23:23 Makefile
+-rw-r--r--@ 1 sumit  staff    129 Oct 16 22:45 README.md
+-rwxr-xr-x@ 1 sumit  staff  33432 Oct 16 22:45 a.out
+drwxr-xr-x@ 2 sumit  staff     64 Oct 17 23:22 bin
+drwxr-xr-x@ 3 sumit  staff     96 Oct 17 23:22 build
+-rw-r--r--@ 1 sumit  staff    117 Oct 16 22:45 file_list.txt
+-rwxr-xr-x@ 1 sumit  staff  33424 Oct 16 22:45 m
+-rw-r--r--@ 1 sumit  staff    404 Oct 16 22:45 myprog.c
+-rwxr-xr-x@ 1 sumit  staff  33640 Oct 16 22:45 myprog.out
+-rwxr-xr-x@ 1 sumit  staff  79368 Oct 17 23:29 myterm
+drwxr-xr-x@ 7 sumit  staff    224 Oct 17 23:29 obj
+-rw-r--r--@ 1 sumit  staff     89 Oct 17 23:27 out_file.txt
+drwxr-xr-x@ 8 sumit  staff    256 Oct 16 22:45 src
+-rw-r--r--@ 1 sumit  staff      7 Oct 16 22:45 tempCodeRunnerFile.c
+-rw-r--r--@ 1 sumit  staff     22 Oct 16 22:45 test_infile.txt
+-rw-r--r--@ 1 sumit  staff     27 Oct 16 22:45 test_sort.txt
