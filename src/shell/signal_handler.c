@@ -1,10 +1,11 @@
-// src/shell/signal_handler.c
+// src/shell/signal_handler.c - FIXED VERSION
 #include "signal_handler.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <termios.h>
 #include <errno.h>
+#include <string.h>
 
 // Global variable to store the shell's process group ID
 static pid_t shell_pgid = 0;
@@ -12,45 +13,31 @@ static int shell_terminal = -1;
 static struct termios shell_tmodes;
 
 /**
- * SIGCHLD handler - reaps zombie processes
- * This runs asynchronously when child processes change state
+ * SIGCHLD handler - DO NOT reap processes here
+ * Let the main code handle waitpid() to avoid race conditions
  */
 static void sigchld_handler(int sig) {
-    // Save errno to avoid interfering with library functions
-    int saved_errno = errno;
-    
-    // Reap all terminated children (non-blocking)
-    // The main loop will handle status reporting via process_manager
-    while (waitpid(-1, NULL, WNOHANG) > 0) {
-        // Child reaped
-    }
-    
-    errno = saved_errno;
+    // DO NOTHING - just interrupt system calls
+    // The main event loop will handle process cleanup
 }
 
 int signal_handler_init(void) {
     // Get the shell's process group
     shell_pgid = getpgrp();
     
+    // Make shell the process group leader if not already
+    if (shell_pgid != getpid()) {
+        shell_pgid = getpid();
+        setpgid(0, shell_pgid);
+    }
+    
     // Get the controlling terminal
     shell_terminal = STDIN_FILENO;
     
-    // Make sure we're in the foreground
-    if (tcgetpgrp(shell_terminal) != shell_pgid) {
-        // We're not in foreground, try to put ourselves there
-        // This might fail if we don't have a controlling terminal
-        if (tcsetpgrp(shell_terminal, shell_pgid) == -1) {
-            // Not a fatal error for GUI terminal
-            // perror("tcsetpgrp shell init");
-        }
-    }
+    // Save default terminal modes (may fail in GUI, that's OK)
+    tcgetattr(shell_terminal, &shell_tmodes);
     
-    // Save default terminal modes
-    if (tcgetattr(shell_terminal, &shell_tmodes) == -1) {
-        // perror("tcgetattr");
-    }
-    
-    // Set up SIGCHLD handler to reap zombies
+    // Set up SIGCHLD handler - just interrupt, don't reap
     struct sigaction sa_chld;
     sa_chld.sa_handler = sigchld_handler;
     sigemptyset(&sa_chld.sa_mask);
@@ -73,6 +60,11 @@ int signal_handler_init(void) {
     // Ignore SIGTTIN (background read from terminal)
     signal(SIGTTIN, SIG_IGN);
     
+    // Ignore SIGQUIT
+    signal(SIGQUIT, SIG_IGN);
+    
+    fprintf(stderr, "[DEBUG] Signal handlers initialized for shell PGID=%d\n", shell_pgid);
+    
     return 0;
 }
 
@@ -83,29 +75,33 @@ void signal_handler_setup_child(void) {
     signal(SIGTTOU, SIG_DFL);
     signal(SIGTTIN, SIG_DFL);
     signal(SIGCHLD, SIG_DFL);
+    signal(SIGQUIT, SIG_DFL);
 }
 
 int signal_handler_give_terminal_to(pid_t pgid) {
-    if (shell_terminal < 0) return 0; // No terminal control in GUI mode
+    if (shell_terminal < 0) return 0;
     
     // Give the terminal to the process group
     if (tcsetpgrp(shell_terminal, pgid) == -1) {
-        if (errno != ENOTTY) { // Ignore if not a tty (GUI mode)
-            perror("tcsetpgrp give");
+        if (errno != ENOTTY && errno != EBADF) {
+            fprintf(stderr, "[DEBUG] tcsetpgrp give to %d failed: %s\n", 
+                    pgid, strerror(errno));
         }
         return -1;
     }
     
+    fprintf(stderr, "[DEBUG] Gave terminal to PGID %d\n", pgid);
     return 0;
 }
 
 int signal_handler_take_terminal_back(void) {
-    if (shell_terminal < 0) return 0; // No terminal control in GUI mode
+    if (shell_terminal < 0) return 0;
     
     // Take the terminal back
     if (tcsetpgrp(shell_terminal, shell_pgid) == -1) {
-        if (errno != ENOTTY) { // Ignore if not a tty (GUI mode)
-            perror("tcsetpgrp take back");
+        if (errno != ENOTTY && errno != EBADF) {
+            fprintf(stderr, "[DEBUG] tcsetpgrp take back to %d failed: %s\n",
+                    shell_pgid, strerror(errno));
         }
         return -1;
     }
@@ -113,6 +109,7 @@ int signal_handler_take_terminal_back(void) {
     // Restore shell terminal modes
     tcsetattr(shell_terminal, TCSADRAIN, &shell_tmodes);
     
+    fprintf(stderr, "[DEBUG] Took terminal back to shell PGID %d\n", shell_pgid);
     return 0;
 }
 

@@ -1,0 +1,45 @@
+[DEBUG] Signal handlers initialized for shell PGID=21704
+[DEBUG] Parent registered child PID=21713, PGID=21713
+[DEBUG] Gave terminal to PGID 21713
+[DEBUG] Child PID=21713, PGID=21713 starting
+[DEBUG] Took terminal back to shell PGID 21704
+[DEBUG] Parent registered child PID=21714, PGID=21714
+[DEBUG] Gave terminal to PGID 21714
+[DEBUG] Child PID=21714, PGID=21714 starting
+[DEBUG] Took terminal back to shell PGID 21704
+[DEBUG] Parent registered child PID=21799, PGID=21799
+[DEBUG] Child PID=21799, PGID=21799 starting
+[DEBUG] Gave terminal to PGID 21799
+[DEBUG] Took terminal back to shell PGID 21704
+[DEBUG] Parent registered child PID=21800, PGID=21800
+[DEBUG] Gave terminal to PGID 21800
+[DEBUG] Child PID=21800, PGID=21800 starting
+[DEBUG] Took terminal back to shell PGID 21704
+[DEBUG] Parent registered child PID=21801, PGID=21801
+[DEBUG] Gave terminal to PGID 21801
+[DEBUG] Child PID=21801, PGID=21801 starting
+[DEBUG] Took terminal back to shell PGID 21704
+[DEBUG] Parent registered child PID=21803, PGID=21803
+[DEBUG] Gave terminal to PGID 21803
+[DEBUG] Child PID=21803, PGID=21803 starting
+[DEBUG] Took terminal back to shell PGID 21704
+[DEBUG] Parent registered child PID=21806, PGID=21806
+[DEBUG] Gave terminal to PGID 21806
+[DEBUG] Child PID=21806, PGID=21806 starting
+[DEBUG] Took terminal back to shell PGID 21704
+[DEBUG] Parent registered child PID=21807, PGID=21807
+[DEBUG] Gave terminal to PGID 21807
+[DEBUG] Child PID=21807, PGID=21807 starting
+[DEBUG] Took terminal back to shell PGID 21704
+[DEBUG] Parent registered child PID=21809, PGID=21809
+[DEBUG] Gave terminal to PGID 21809
+[DEBUG] Child PID=21809, PGID=21809 starting
+[DEBUG] Took terminal back to shell PGID 21704
+[DEBUG] Parent registered child PID=21810, PGID=21810
+[DEBUG] Gave terminal to PGID 21810
+[DEBUG] Child PID=21810, PGID=21810 starting
+[DEBUG] Took terminal back to shell PGID 21704
+[DEBUG] Parent registered child PID=21812, PGID=21812
+[DEBUG] Gave terminal to PGID 21812
+[DEBUG] Child PID=21812, PGID=21812 starting
+[DEBUG] Took terminal back to shell PGID 21704

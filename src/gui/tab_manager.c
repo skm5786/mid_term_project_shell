@@ -138,55 +138,114 @@ Tab* tab_manager_get_active(TabManager *mgr) {
 // NEW: Handle Ctrl+C signal
 // Add this debug version to tab_manager_send_sigint() function
 
+// Replace the tab_manager_send_sigint() function in src/gui/tab_manager.c
+
 void tab_manager_send_sigint(TabManager *mgr) {
+    printf("[SIGINT] tab_manager_send_sigint() called\n");
+    fflush(stdout);
+    
     Tab *tab = tab_manager_get_active(mgr);
-    if (!tab || !tab->process_manager) {
-        fprintf(stderr, "[DEBUG] No active tab or process manager\n");
+    if (!tab) {
+        printf("[SIGINT] ERROR: No active tab\n");
+        fflush(stdout);
+        return;
+    }
+    
+    if (!tab->process_manager) {
+        printf("[SIGINT] ERROR: No process manager\n");
+        fflush(stdout);
         return;
     }
     
     ProcessInfo *fg_proc = process_manager_get_foreground(tab->process_manager);
     if (!fg_proc) {
-        fprintf(stderr, "[DEBUG] No foreground process found\n");
+        printf("[SIGINT] ERROR: No foreground process\n");
+        fflush(stdout);
         return;
     }
     
-    fprintf(stderr, "[DEBUG] Foreground process: PID=%d, PGID=%d, Command=%s\n", 
+    printf("[SIGINT] Foreground process: PID=%d, PGID=%d, Command='%s'\n", 
             fg_proc->pid, fg_proc->pgid, fg_proc->command);
+    fflush(stdout);
     
     // Check if process still exists
     if (kill(fg_proc->pid, 0) == -1) {
-        fprintf(stderr, "[DEBUG] Process %d no longer exists (errno=%d)\n", 
-                fg_proc->pid, errno);
-        process_manager_clear_foreground(tab->process_manager);
-        signal_handler_take_terminal_back();
-        return;
-    }
-    
-    fprintf(stderr, "[DEBUG] Sending SIGINT to process group -%d\n", fg_proc->pgid);
-    
-    // Send SIGINT to the entire process group
-    if (kill(-fg_proc->pgid, SIGINT) == -1) {
-        fprintf(stderr, "[DEBUG] kill() failed: errno=%d (%s)\n", 
-                errno, strerror(errno));
-    } else {
-        fprintf(stderr, "[DEBUG] SIGINT sent successfully\n");
-    }
-    
-    // Wait briefly for the process to terminate
-    int status;
-    pid_t result = waitpid(fg_proc->pid, &status, WNOHANG);
-    
-    fprintf(stderr, "[DEBUG] waitpid result: %d\n", result);
-    
-    if (result == fg_proc->pid || result == -1) {
-        fprintf(stderr, "[DEBUG] Process terminated or error, clearing foreground\n");
+        printf("[SIGINT] Process %d doesn't exist (errno=%d: %s)\n", 
+               fg_proc->pid, errno, strerror(errno));
+        fflush(stdout);
         process_manager_clear_foreground(tab->process_manager);
         signal_handler_take_terminal_back();
         text_buffer_append(tab->buffer, "^C\n");
-    } else {
-        fprintf(stderr, "[DEBUG] Process still running after SIGINT\n");
+        return;
     }
+    
+    printf("[SIGINT] Process exists, sending SIGINT to group -%d\n", fg_proc->pgid);
+    fflush(stdout);
+    
+    // Send SIGINT to the entire process group
+    int kill_result = kill(-fg_proc->pgid, SIGINT);
+    
+    printf("[SIGINT] kill(-%d, SIGINT) = %d, errno=%d (%s)\n", 
+           fg_proc->pgid, kill_result, errno, 
+           kill_result == -1 ? strerror(errno) : "success");
+    fflush(stdout);
+    
+    if (kill_result == -1) {
+        printf("[SIGINT] kill() failed, cleaning up anyway\n");
+        fflush(stdout);
+        process_manager_clear_foreground(tab->process_manager);
+        signal_handler_take_terminal_back();
+        text_buffer_append(tab->buffer, "^C\n");
+        return;
+    }
+    
+    // Wait for process to terminate (with timeout)
+    int status;
+    int wait_attempts = 0;
+    int max_attempts = 50; // 500ms total
+    
+    printf("[SIGINT] Waiting for process to terminate...\n");
+    fflush(stdout);
+    
+    while (wait_attempts < max_attempts) {
+        pid_t result = waitpid(fg_proc->pid, &status, WNOHANG);
+        
+        if (result == fg_proc->pid) {
+            // Process exited
+            printf("[SIGINT] Process terminated: ");
+            if (WIFSIGNALED(status)) {
+                printf("killed by signal %d\n", WTERMSIG(status));
+            } else if (WIFEXITED(status)) {
+                printf("exited with status %d\n", WEXITSTATUS(status));
+            } else {
+                printf("unknown status\n");
+            }
+            fflush(stdout);
+            break;
+        } else if (result == -1) {
+            printf("[SIGINT] waitpid returned -1, errno=%d (%s)\n", 
+                   errno, strerror(errno));
+            fflush(stdout);
+            break;
+        } else if (result == 0) {
+            // Still running
+            usleep(10000); // 10ms
+            wait_attempts++;
+        }
+    }
+    
+    if (wait_attempts >= max_attempts) {
+        printf("[SIGINT] WARNING: Process didn't terminate after 500ms\n");
+        fflush(stdout);
+    }
+    
+    // Clean up
+    process_manager_clear_foreground(tab->process_manager);
+    signal_handler_take_terminal_back();
+    text_buffer_append(tab->buffer, "^C\n");
+    
+    printf("[SIGINT] Cleanup complete, ^C added to buffer\n");
+    fflush(stdout);
 }
 // NEW: Handle Ctrl+Z signal
 void tab_manager_send_sigtstp(TabManager *mgr) {

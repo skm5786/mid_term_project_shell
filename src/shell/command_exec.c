@@ -1,5 +1,4 @@
-// in src/shell/command_exec.c
-
+// src/shell/command_exec.c - FIXED VERSION
 #include "command_exec.h"
 #include "process_manager.h"
 #include "signal_handler.h"
@@ -8,6 +7,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/select.h>
 #include <fcntl.h>
 #include <errno.h>
 
@@ -70,8 +70,7 @@ char* execute_external_command(Command *cmd, RedirectInfo *redir_info) {
     }
 }
 
-// NEW: Execute command with full signal handling support
-// CRITICAL FIX: Make output pipe non-blocking and use select() for interruptible I/O
+// NEW: Execute command with full signal handling support - FIXED VERSION
 char* execute_command_with_signals(Command *cmd, RedirectInfo *redir_info,
                                    struct ProcessManager *pm, const char *cmd_str) {
     if (!cmd || cmd->argc == 0) return NULL;
@@ -81,10 +80,6 @@ char* execute_command_with_signals(Command *cmd, RedirectInfo *redir_info,
         perror("pipe"); 
         return NULL; 
     }
-    
-    // Make read end non-blocking for interruptible reads
-    int flags = fcntl(output_pipe[0], F_GETFL, 0);
-    fcntl(output_pipe[0], F_SETFL, flags | O_NONBLOCK);
 
     pid_t pid = fork();
     if (pid == -1) { 
@@ -100,6 +95,8 @@ char* execute_command_with_signals(Command *cmd, RedirectInfo *redir_info,
         if (setpgid(0, child_pgid) == -1) {
             perror("setpgid in child");
         }
+        
+        fprintf(stderr, "[DEBUG] Child PID=%d, PGID=%d starting\n", getpid(), child_pgid);
         
         // Restore default signal handlers
         signal_handler_setup_child();
@@ -146,67 +143,104 @@ char* execute_command_with_signals(Command *cmd, RedirectInfo *redir_info,
     } else { // --- Parent Process ---
         close(output_pipe[1]);
         
-        // Put child in its own process group
+        // Put child in its own process group (parent side)
         pid_t child_pgid = pid;
         setpgid(pid, child_pgid);
+        
+        fprintf(stderr, "[DEBUG] Parent registered child PID=%d, PGID=%d\n", pid, child_pgid);
         
         // Register as foreground process if we have a process manager
         if (pm) {
             process_manager_set_foreground(pm, pid, child_pgid, cmd_str);
+            // Give terminal control to child (may fail in GUI, that's OK)
             signal_handler_give_terminal_to(child_pgid);
         }
         
-        // Read output from child using non-blocking I/O
+        // Read output using select() for proper interruption
         char *output = malloc(8192);
-        if (output) output[0] = '\0';
+        if (!output) {
+            close(output_pipe[0]);
+            waitpid(pid, NULL, 0);
+            return NULL;
+        }
+        output[0] = '\0';
         int output_len = 0;
-        char buffer[256];
         
-        // Keep reading until process exits
-        while (1) {
+        // Set pipe to non-blocking mode
+        int flags = fcntl(output_pipe[0], F_GETFL, 0);
+        fcntl(output_pipe[0], F_SETFL, flags | O_NONBLOCK);
+        
+        int process_exited = 0;
+        int exit_status = 0;
+        
+        while (!process_exited) {
+            // Use select with timeout for interruptible I/O
+            fd_set read_fds;
+            struct timeval timeout;
+            
+            FD_ZERO(&read_fds);
+            FD_SET(output_pipe[0], &read_fds);
+            
+            timeout.tv_sec = 0;
+            timeout.tv_usec = 50000; // 50ms timeout
+            
+            int select_result = select(output_pipe[0] + 1, &read_fds, NULL, NULL, &timeout);
+            
+            if (select_result > 0 && FD_ISSET(output_pipe[0], &read_fds)) {
+                // Data available to read
+                char buffer[256];
+                ssize_t bytes_read = read(output_pipe[0], buffer, sizeof(buffer) - 1);
+                
+                if (bytes_read > 0) {
+                    buffer[bytes_read] = '\0';
+                    if (output_len + bytes_read < 8191) {
+                        strcat(output, buffer);
+                        output_len += bytes_read;
+                    }
+                } else if (bytes_read == 0) {
+                    // EOF - pipe closed
+                    break;
+                }
+            }
+            
             // Check if process has exited
             int status;
             pid_t wait_result = waitpid(pid, &status, WNOHANG | WUNTRACED);
             
             if (wait_result == pid) {
-                // Process exited or stopped
                 if (WIFSTOPPED(status)) {
-                    // Process was stopped by signal (shouldn't happen here since 
-                    // Ctrl+Z is handled in main loop, but check anyway)
-                    break;
-                } else {
-                    // Process exited normally or was terminated
-                    // Read any remaining output
-                    int bytes_read;
-                    while ((bytes_read = read(output_pipe[0], buffer, sizeof(buffer) - 1)) > 0) {
-                        buffer[bytes_read] = '\0';
-                        if (output && output_len + bytes_read < 8192) {
-                            strcat(output, buffer);
-                            output_len += bytes_read;
-                        }
+                    // Process was stopped (Ctrl+Z)
+                    fprintf(stderr, "[DEBUG] Process %d stopped\n", pid);
+                    process_exited = 1;
+                } else if (WIFEXITED(status) || WIFSIGNALED(status)) {
+                    // Process exited or was killed
+                    exit_status = status;
+                    process_exited = 1;
+                    
+                    if (WIFSIGNALED(status)) {
+                        fprintf(stderr, "[DEBUG] Process %d terminated by signal %d\n", 
+                                pid, WTERMSIG(status));
+                    } else {
+                        fprintf(stderr, "[DEBUG] Process %d exited with status %d\n", 
+                                pid, WEXITSTATUS(status));
                     }
-                    break;
                 }
-            } else if (wait_result == -1) {
-                // Error - process might have been reaped elsewhere
+            } else if (wait_result == -1 && errno != EINTR) {
+                // Error (but not interrupted by signal)
+                fprintf(stderr, "[DEBUG] waitpid error: %s\n", strerror(errno));
                 break;
             }
-            
-            // Try to read some output (non-blocking)
-            int bytes_read = read(output_pipe[0], buffer, sizeof(buffer) - 1);
-            if (bytes_read > 0) {
-                buffer[bytes_read] = '\0';
-                if (output && output_len + bytes_read < 8192) {
-                    strcat(output, buffer);
-                    output_len += bytes_read;
-                }
-            } else if (bytes_read == -1 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                // Real error, not just "would block"
-                break;
+        }
+        
+        // Read any remaining output after process exits
+        char buffer[256];
+        ssize_t bytes_read;
+        while ((bytes_read = read(output_pipe[0], buffer, sizeof(buffer) - 1)) > 0) {
+            buffer[bytes_read] = '\0';
+            if (output_len + bytes_read < 8191) {
+                strcat(output, buffer);
+                output_len += bytes_read;
             }
-            
-            // Small delay to avoid busy-waiting (1ms)
-            usleep(1000);
         }
         
         close(output_pipe[0]);

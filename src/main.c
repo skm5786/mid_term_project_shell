@@ -1,4 +1,4 @@
-// in src/main.c
+// in src/main.c - COMPLETE FIXED VERSION
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,7 +17,7 @@
 #include "utils/unicode_handler.h"
 #include "shell/multiwatch.h"
 #include "shell/signal_handler.h"
-#include "shell/process_manager.h"  // NEW: Include signal handler
+#include "shell/process_manager.h"
 
 // --- Global variables for main.c ---
 static char *clipboard_content = NULL;
@@ -78,30 +78,46 @@ void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X
     int len = Xutf8LookupString(input_state->xic, &event->xkey, buffer, sizeof(buffer) - 1, &keysym, &status);
     buffer[len] = '\0';
 
+    // DEBUG: Print every keypress
+    printf("[KEYPRESS] keysym=0x%lx, state=0x%x, ControlMask=%d\n", 
+           keysym, event->xkey.state, !!(event->xkey.state & ControlMask));
+    fflush(stdout);
+
     // Handle high-priority interrupts first
     if (event->xkey.state & ControlMask) {
         if (keysym == XK_c) {
+            printf("[CTRL+C] Detected! multiwatch=%p, process_manager=%p, fg_process=%p\n",
+                   active_tab->multiwatch_session,
+                   active_tab->process_manager,
+                   active_tab->process_manager ? 
+                       process_manager_get_foreground(active_tab->process_manager) : NULL);
+            fflush(stdout);
+            
             // NEW: Ctrl+C handling - stop multiWatch or send SIGINT to foreground process
             if (active_tab->multiwatch_session) {
                 cleanup_multiwatch((MultiWatch *)active_tab->multiwatch_session);
                 active_tab->multiwatch_session = NULL;
                 line_edit_clear(le);
                 text_buffer_append(active_tab->buffer, "\n[multiWatch stopped.]\n");
+                printf("[CTRL+C] Stopped multiwatch\n");
+            } else if (active_tab->process_manager && 
+                       process_manager_get_foreground(active_tab->process_manager)) {
+                printf("[CTRL+C] Sending SIGINT to foreground process\n");
+                fflush(stdout);
+                tab_manager_send_sigint(mgr);
             } else {
-                // Check if there's a foreground process to interrupt
-                if (active_tab->process_manager && 
-                    process_manager_get_foreground(active_tab->process_manager)) {
-                    tab_manager_send_sigint(mgr);
-                } else {
-                    // No foreground process, treat as copy
-                    handle_copy_to_clipboard(ctx, line_edit_get_line(le));
-                }
+                // No foreground process, treat as copy
+                printf("[CTRL+C] No foreground process, treating as copy\n");
+                fflush(stdout);
+                handle_copy_to_clipboard(ctx, line_edit_get_line(le));
             }
             return;
         }
         
         // NEW: Ctrl+Z handling - move foreground process to background
         if (keysym == XK_z) {
+            printf("[CTRL+Z] Detected!\n");
+            fflush(stdout);
             if (active_tab->process_manager && 
                 process_manager_get_foreground(active_tab->process_manager)) {
                 tab_manager_send_sigtstp(mgr);
@@ -110,9 +126,18 @@ void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X
         }
         
         // Other global shortcuts
-        if (keysym == XK_n) { tab_manager_create_tab(mgr); return; }
-        if (keysym == XK_w) { tab_manager_close_tab(mgr, mgr->active_tab); return; }
-        if ((event->xkey.state & ShiftMask) && keysym == XK_v) { handle_paste_from_clipboard(ctx); return; }
+        if (keysym == XK_n) { 
+            tab_manager_create_tab(mgr); 
+            return; 
+        }
+        if (keysym == XK_w) { 
+            tab_manager_close_tab(mgr, mgr->active_tab); 
+            return; 
+        }
+        if ((event->xkey.state & ShiftMask) && keysym == XK_v) { 
+            handle_paste_from_clipboard(ctx); 
+            return; 
+        }
     }
     
     // If multiWatch is active, block all other text input
@@ -129,7 +154,11 @@ void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X
     // Standard key handling
     switch (keysym) {
         case XK_Return:
+            printf("[ENTER] Executing command: %s\n", line_edit_get_line(le));
+            fflush(stdout);
             tab_manager_execute_command(mgr, line_edit_get_line(le));
+            printf("[ENTER] Command execution returned\n");
+            fflush(stdout);
             break;
         case XK_BackSpace:
             line_edit_delete_char_before_cursor(le);
@@ -149,22 +178,47 @@ void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X
 }
 
 int main(void) {
-    if (setlocale(LC_ALL, "") == NULL) fprintf(stderr, "Warning: could not set locale.\n");
+    // Redirect stdout/stderr to files for debugging
+    FILE *debug_out = fopen("/tmp/myterm_debug.log", "w");
+    if (debug_out) {
+        // Unbuffer for immediate output
+        setvbuf(debug_out, NULL, _IONBF, 0);
+        dup2(fileno(debug_out), STDERR_FILENO);
+        dup2(fileno(debug_out), STDOUT_FILENO);
+    }
+    
+    printf("=== MyTerm Starting ===\n");
+    printf("PID: %d\n", getpid());
+    fflush(stdout);
+    
+    if (setlocale(LC_ALL, "") == NULL) {
+        fprintf(stderr, "Warning: could not set locale.\n");
+    }
 
     // NEW: Initialize signal handlers before creating any processes
+    printf("Initializing signal handlers...\n");
+    fflush(stdout);
     if (signal_handler_init() == -1) {
         fprintf(stderr, "Warning: Failed to initialize signal handlers.\n");
     }
+    printf("Signal handlers initialized\n");
+    fflush(stdout);
 
     X11Context *ctx = x11_init("MyTerm");
     TabManager *tab_mgr = tab_manager_init();
     InputState *input_state = input_state_init(ctx->display, ctx->window);
-    if (!ctx || !tab_mgr || !input_state) return 1;
+    if (!ctx || !tab_mgr || !input_state) {
+        fprintf(stderr, "Failed to initialize components\n");
+        return 1;
+    }
 
     g_tab_mgr_for_callback = tab_mgr;
 
     Atom wm_delete_window = XInternAtom(ctx->display, "WM_DELETE_WINDOW", False);
     XSetWMProtocols(ctx->display, ctx->window, &wm_delete_window, 1);
+
+    printf("Entering main event loop\n");
+    fflush(stdout);
 
     int running = 1;
     while (running) {
@@ -262,9 +316,17 @@ int main(void) {
         usleep(10000); // Prevent 100% CPU usage
     }
 
+    printf("Cleaning up...\n");
+    fflush(stdout);
+
     if (clipboard_content) free(clipboard_content);
     input_state_cleanup(input_state);
     tab_manager_cleanup(tab_mgr);
     x11_cleanup(ctx);
+    
+    if (debug_out) {
+        fclose(debug_out);
+    }
+    
     return 0;
 }
