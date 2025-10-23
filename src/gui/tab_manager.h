@@ -5,11 +5,14 @@
 #include <unistd.h>
 #include <limits.h>
 #include "../input/line_edit.h"
+
 #define MAX_TABS 10
+
 struct TextBuffer;
 struct MultiWatch;
+struct ProcessManager;  // Forward declaration
+
 typedef struct Tab{
-    // This now uses the forward-declared type, which is fine for a pointer.
     struct TextBuffer *buffer;
     pid_t shell_pid;
     int pipe_stdin[2];
@@ -18,6 +21,7 @@ typedef struct Tab{
     LineEdit *line_edit;
     char working_directory[PATH_MAX];
     void *multiwatch_session;
+    struct ProcessManager *process_manager;  // NEW: Process and job control
 } Tab;
 
 // Tab manager to handle multiple tabs
@@ -35,5 +39,10 @@ void tab_manager_close_tab(TabManager *mgr, int tab_index);
 void tab_manager_switch_tab(TabManager *mgr, int tab_index);
 Tab* tab_manager_get_active(TabManager *mgr);
 void tab_manager_execute_command(TabManager *mgr, const char *cmd_str);
+
+// NEW: Signal handling functions
+void tab_manager_send_sigint(TabManager *mgr);
+void tab_manager_send_sigtstp(TabManager *mgr);
+void tab_manager_check_background_jobs(TabManager *mgr, void (*output_callback)(const char *));
 
 #endif // TAB_MANAGER_H

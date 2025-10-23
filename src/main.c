@@ -13,13 +13,15 @@
 #include "gui/x11_render.h"
 #include "gui/tab_manager.h"
 #include "input/input_handler.h"
-#include "input/line_edit.h"      // ADDED: Include for the new line editing module
+#include "input/line_edit.h"
 #include "utils/unicode_handler.h"
 #include "shell/multiwatch.h"
+#include "shell/signal_handler.h"
+#include "shell/process_manager.h"  // NEW: Include signal handler
 
 // --- Global variables for main.c ---
 static char *clipboard_content = NULL;
-static TabManager *g_tab_mgr_for_callback = NULL; // For the multiwatch callback
+static TabManager *g_tab_mgr_for_callback = NULL;
 
 // Callback function for multiwatch to append output to the active tab's buffer
 static void multiwatch_output_callback(const char *output) {
@@ -27,6 +29,16 @@ static void multiwatch_output_callback(const char *output) {
         Tab *active_tab = tab_manager_get_active(g_tab_mgr_for_callback);
         if (active_tab) {
             text_buffer_append(active_tab->buffer, output);
+        }
+    }
+}
+
+// NEW: Callback for background job notifications
+static void background_job_callback(const char *notification) {
+    if (g_tab_mgr_for_callback) {
+        Tab *active_tab = tab_manager_get_active(g_tab_mgr_for_callback);
+        if (active_tab) {
+            text_buffer_append(active_tab->buffer, notification);
         }
     }
 }
@@ -40,7 +52,6 @@ void handle_mouse_click(XButtonEvent *event, TabManager *mgr, X11Context *ctx) {
     }
 }
 
-// MODIFIED: Takes a const char* to copy to the clipboard
 void handle_copy_to_clipboard(X11Context *ctx, const char *text_to_copy) {
     if (text_to_copy && strlen(text_to_copy) > 0) {
         if (clipboard_content) free(clipboard_content);
@@ -56,7 +67,6 @@ void handle_paste_from_clipboard(X11Context *ctx) {
     XConvertSelection(ctx->display, clipboard_atom, utf8_atom, clipboard_atom, ctx->window, CurrentTime);
 }
 
-// --- REWRITTEN: This function now uses the LineEdit module ---
 void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X11Context *ctx) {
     Tab *active_tab = tab_manager_get_active(mgr);
     if (!active_tab) return;
@@ -71,16 +81,34 @@ void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X
     // Handle high-priority interrupts first
     if (event->xkey.state & ControlMask) {
         if (keysym == XK_c) {
+            // NEW: Ctrl+C handling - stop multiWatch or send SIGINT to foreground process
             if (active_tab->multiwatch_session) {
                 cleanup_multiwatch((MultiWatch *)active_tab->multiwatch_session);
                 active_tab->multiwatch_session = NULL;
-                line_edit_clear(le); // Clear any partial input
+                line_edit_clear(le);
                 text_buffer_append(active_tab->buffer, "\n[multiWatch stopped.]\n");
             } else {
-                handle_copy_to_clipboard(ctx, line_edit_get_line(le));
+                // Check if there's a foreground process to interrupt
+                if (active_tab->process_manager && 
+                    process_manager_get_foreground(active_tab->process_manager)) {
+                    tab_manager_send_sigint(mgr);
+                } else {
+                    // No foreground process, treat as copy
+                    handle_copy_to_clipboard(ctx, line_edit_get_line(le));
+                }
             }
             return;
         }
+        
+        // NEW: Ctrl+Z handling - move foreground process to background
+        if (keysym == XK_z) {
+            if (active_tab->process_manager && 
+                process_manager_get_foreground(active_tab->process_manager)) {
+                tab_manager_send_sigtstp(mgr);
+            }
+            return;
+        }
+        
         // Other global shortcuts
         if (keysym == XK_n) { tab_manager_create_tab(mgr); return; }
         if (keysym == XK_w) { tab_manager_close_tab(mgr, mgr->active_tab); return; }
@@ -113,7 +141,7 @@ void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X
             line_edit_move_right(le);
             break;
         default:
-            if (len > 0) { // Regular character input (UTF-8 aware)
+            if (len > 0) {
                 line_edit_insert_string(le, buffer);
             }
             break;
@@ -123,12 +151,17 @@ void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X
 int main(void) {
     if (setlocale(LC_ALL, "") == NULL) fprintf(stderr, "Warning: could not set locale.\n");
 
+    // NEW: Initialize signal handlers before creating any processes
+    if (signal_handler_init() == -1) {
+        fprintf(stderr, "Warning: Failed to initialize signal handlers.\n");
+    }
+
     X11Context *ctx = x11_init("MyTerm");
     TabManager *tab_mgr = tab_manager_init();
     InputState *input_state = input_state_init(ctx->display, ctx->window);
     if (!ctx || !tab_mgr || !input_state) return 1;
 
-    g_tab_mgr_for_callback = tab_mgr; // Set global manager for the multiwatch callback
+    g_tab_mgr_for_callback = tab_mgr;
 
     Atom wm_delete_window = XInternAtom(ctx->display, "WM_DELETE_WINDOW", False);
     XSetWMProtocols(ctx->display, ctx->window, &wm_delete_window, 1);
@@ -140,6 +173,11 @@ int main(void) {
         // --- POLLING LOGIC ---
         if (active_tab && active_tab->multiwatch_session) {
             multiwatch_poll_output((MultiWatch *)active_tab->multiwatch_session, multiwatch_output_callback);
+        }
+        
+        // NEW: Check for completed background jobs
+        if (active_tab) {
+            tab_manager_check_background_jobs(tab_mgr, background_job_callback);
         }
         
         // Process all pending X11 events
@@ -158,7 +196,7 @@ int main(void) {
                 case ClientMessage:
                     if ((Atom)event.xclient.data.l[0] == wm_delete_window) running = 0;
                     break;
-                case SelectionNotify: { // Handles paste after XConvertSelection
+                case SelectionNotify: {
                     if (event.xselection.property == None) break;
                     Atom type;
                     int format;
@@ -172,7 +210,7 @@ int main(void) {
                     }
                     break;
                 }
-                case SelectionRequest: { // Handles serving a copy request
+                case SelectionRequest: {
                     XSelectionRequestEvent *req = &event.xselectionrequest;
                     if (req->selection == XInternAtom(ctx->display, "CLIPBOARD", False)) {
                         XSelectionEvent sev = {0};
@@ -199,26 +237,19 @@ int main(void) {
         
         if (tab_mgr->num_tabs == 0) running = 0;
         
-        // --- MODIFIED RENDER LOGIC ---
+        // --- RENDER LOGIC ---
         if (active_tab) {
             render_tabs(ctx, tab_mgr);
-            // 1. Render historical output
-            render_text_buffer(ctx, active_tab->buffer); 
+            render_text_buffer(ctx, active_tab->buffer);
 
-            // 2. Manually render the current input line and cursor from LineEdit
             const char *line = line_edit_get_line(active_tab->line_edit);
             int font_height = ctx->font->ascent + ctx->font->descent;
             int line_y = TAB_BAR_HEIGHT + (active_tab->buffer->line_count * font_height) + ctx->font->ascent;
             
-            // Only draw input line if multiwatch is NOT active
             if (!active_tab->multiwatch_session) {
-                // Draw prompt
                 XDrawString(ctx->display, ctx->window, ctx->gc, 10, line_y, "$ ", 2);
-                
-                // Draw the input line text
                 XDrawString(ctx->display, ctx->window, ctx->gc, 10 + XTextWidth(ctx->font, "$ ", 2), line_y, line, strlen(line));
             
-                // Draw the cursor at the correct position
                 int cursor_x = 10 + XTextWidth(ctx->font, "$ ", 2) +
                                XTextWidth(ctx->font, line, active_tab->line_edit->cursor_pos);
                 int cursor_y = TAB_BAR_HEIGHT + (active_tab->buffer->line_count * font_height);

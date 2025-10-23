@@ -13,6 +13,8 @@ SOURCES := src/main.c \
 		   src/shell/redirect_handler.c \
 		   src/shell/pipe_handler.c \
 		   src/shell/multiwatch.c \
+		   src/shell/process_manager.c \
+		   src/shell/signal_handler.c \
            src/utils/unicode_handler.c \
            src/input/input_handler.c \
 		   src/input/line_edit.c

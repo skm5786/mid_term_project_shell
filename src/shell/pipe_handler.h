@@ -9,11 +9,14 @@
 
 #define MAX_PIPE_COMMANDS 16
 
+// Forward declaration
+struct ProcessManager;
+
 // A single command within a pipeline, with its own redirections
 typedef struct {
-    char* raw_command; // The unparsed command string for this segment
-    Command cmd;       // The parsed command (args, argc)
-    RedirectInfo redirects; // Redirections for this specific command
+    char* raw_command;
+    Command cmd;
+    RedirectInfo redirects;
 } PipeCommand;
 
 // The complete pipeline of commands
@@ -24,23 +27,31 @@ typedef struct {
 
 /**
  * @brief Checks if a command string contains a pipe operator.
- * @param cmd_str The raw command string.
- * @return 1 if a pipe is found, 0 otherwise.
  */
 int has_pipe(const char *cmd_str);
 
 /**
  * @brief Parses a raw command string into a Pipeline structure.
- * @param cmd_str The raw command string (e.g., "ls -l | wc -l").
- * @return A pointer to a new Pipeline structure, or NULL on failure.
  */
 Pipeline* parse_pipeline(char *cmd_str);
 
 /**
  * @brief Frees all memory associated with a Pipeline structure.
- * @param pipeline The pipeline to free.
  */
 void free_pipeline(Pipeline *pipeline);
+
+/**
+ * @brief Execute pipeline (legacy version without signal handling).
+ */
 char* execute_pipeline(Pipeline *pipeline);
+
+/**
+ * @brief Execute pipeline with full signal handling support.
+ * @param pipeline The pipeline to execute.
+ * @param pm Process manager for job control.
+ * @param cmd_str Original command string for display.
+ */
+char* execute_pipeline_with_signals(Pipeline *pipeline, struct ProcessManager *pm, 
+                                    const char *cmd_str);
 
 #endif // PIPE_HANDLER_H
