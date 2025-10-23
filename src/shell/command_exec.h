@@ -28,6 +28,7 @@ char* execute_command(Command *cmd, RedirectInfo *redir_info);
  */
 char* execute_command_with_signals(Command *cmd, RedirectInfo *redir_info,
                                    struct ProcessManager *pm, const char *cmd_str);
+void set_event_processor_callback(int (*callback)(void));
 
 /**
  * @brief Built-in cd command handler.

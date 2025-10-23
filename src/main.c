@@ -1,4 +1,4 @@
-// in src/main.c - COMPLETE FIXED VERSION
+// in src/main.c - UPDATED WITH HISTORY SEARCH SUPPORT
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,11 +19,9 @@
 #include "shell/signal_handler.h"
 #include "shell/process_manager.h"
 
-// --- Global variables for main.c ---
 static char *clipboard_content = NULL;
 static TabManager *g_tab_mgr_for_callback = NULL;
 
-// Callback function for multiwatch to append output to the active tab's buffer
 static void multiwatch_output_callback(const char *output) {
     if (g_tab_mgr_for_callback) {
         Tab *active_tab = tab_manager_get_active(g_tab_mgr_for_callback);
@@ -33,7 +31,6 @@ static void multiwatch_output_callback(const char *output) {
     }
 }
 
-// NEW: Callback for background job notifications
 static void background_job_callback(const char *notification) {
     if (g_tab_mgr_for_callback) {
         Tab *active_tab = tab_manager_get_active(g_tab_mgr_for_callback);
@@ -78,7 +75,6 @@ void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X
     int len = Xutf8LookupString(input_state->xic, &event->xkey, buffer, sizeof(buffer) - 1, &keysym, &status);
     buffer[len] = '\0';
 
-    // DEBUG: Print every keypress
     printf("[KEYPRESS] keysym=0x%lx, state=0x%x, ControlMask=%d\n", 
            keysym, event->xkey.state, !!(event->xkey.state & ControlMask));
     fflush(stdout);
@@ -93,7 +89,6 @@ void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X
                        process_manager_get_foreground(active_tab->process_manager) : NULL);
             fflush(stdout);
             
-            // NEW: Ctrl+C handling - stop multiWatch or send SIGINT to foreground process
             if (active_tab->multiwatch_session) {
                 cleanup_multiwatch((MultiWatch *)active_tab->multiwatch_session);
                 active_tab->multiwatch_session = NULL;
@@ -106,7 +101,6 @@ void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X
                 fflush(stdout);
                 tab_manager_send_sigint(mgr);
             } else {
-                // No foreground process, treat as copy
                 printf("[CTRL+C] No foreground process, treating as copy\n");
                 fflush(stdout);
                 handle_copy_to_clipboard(ctx, line_edit_get_line(le));
@@ -114,13 +108,22 @@ void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X
             return;
         }
         
-        // NEW: Ctrl+Z handling - move foreground process to background
         if (keysym == XK_z) {
             printf("[CTRL+Z] Detected!\n");
             fflush(stdout);
             if (active_tab->process_manager && 
                 process_manager_get_foreground(active_tab->process_manager)) {
                 tab_manager_send_sigtstp(mgr);
+            }
+            return;
+        }
+        
+        // NEW: Ctrl+R for history search
+        if (keysym == XK_r) {
+            printf("[CTRL+R] History search activated\n");
+            fflush(stdout);
+            if (!active_tab->multiwatch_session && !active_tab->in_search_mode) {
+                tab_manager_enter_search_mode(mgr);
             }
             return;
         }
@@ -177,11 +180,44 @@ void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X
     }
 }
 
+static X11Context *g_ctx = NULL;
+static TabManager *g_tab_mgr = NULL;
+static InputState *g_input_state = NULL;
+
+// Forward declaration
+void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X11Context *ctx);
+void handle_mouse_click(XButtonEvent *event, TabManager *mgr, X11Context *ctx);
+
+
+
+// NEW: Function to process pending X11 events (called from command execution)
+int process_pending_events(void) {
+    if (!g_ctx || !g_tab_mgr || !g_input_state) return 0;
+    
+    // Process ALL pending X11 events
+    while (XPending(g_ctx->display)) {
+        XEvent event;
+        XNextEvent(g_ctx->display, &event);
+        if (XFilterEvent(&event, None)) continue;
+
+        switch (event.type) {
+            case KeyPress:
+                process_keypress(&event, g_tab_mgr, g_input_state, g_ctx);
+                break;
+            case ButtonPress:
+                handle_mouse_click(&event.xbutton, g_tab_mgr, g_ctx);
+                break;
+            // Ignore other events during command execution
+        }
+    }
+    
+    return 0; // Return 0 for now (could return 1 if interrupt requested)
+}
+
 int main(void) {
     // Redirect stdout/stderr to files for debugging
     FILE *debug_out = fopen("/tmp/myterm_debug.log", "w");
     if (debug_out) {
-        // Unbuffer for immediate output
         setvbuf(debug_out, NULL, _IONBF, 0);
         dup2(fileno(debug_out), STDERR_FILENO);
         dup2(fileno(debug_out), STDOUT_FILENO);
@@ -195,7 +231,6 @@ int main(void) {
         fprintf(stderr, "Warning: could not set locale.\n");
     }
 
-    // NEW: Initialize signal handlers before creating any processes
     printf("Initializing signal handlers...\n");
     fflush(stdout);
     if (signal_handler_init() == -1) {
@@ -212,7 +247,15 @@ int main(void) {
         return 1;
     }
 
+    // Set global pointers for event processing callback
+    g_ctx = ctx;
+    g_tab_mgr = tab_mgr;
+    g_input_state = input_state;
     g_tab_mgr_for_callback = tab_mgr;
+
+    // Register the event processor callback
+    extern void set_event_processor_callback(int (*callback)(void));
+    set_event_processor_callback(process_pending_events);
 
     Atom wm_delete_window = XInternAtom(ctx->display, "WM_DELETE_WINDOW", False);
     XSetWMProtocols(ctx->display, ctx->window, &wm_delete_window, 1);
@@ -229,7 +272,6 @@ int main(void) {
             multiwatch_poll_output((MultiWatch *)active_tab->multiwatch_session, multiwatch_output_callback);
         }
         
-        // NEW: Check for completed background jobs
         if (active_tab) {
             tab_manager_check_background_jobs(tab_mgr, background_job_callback);
         }

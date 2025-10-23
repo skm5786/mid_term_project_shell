@@ -4,6 +4,7 @@ TARGET = myterm
 OBJDIR = obj
 
 # Add the new source files to the list
+# Add history_manager.c to the source list
 SOURCES := src/main.c \
            src/gui/x11_window.c \
            src/gui/x11_render.c \
@@ -15,6 +16,7 @@ SOURCES := src/main.c \
 		   src/shell/multiwatch.c \
 		   src/shell/process_manager.c \
 		   src/shell/signal_handler.c \
+           src/shell/history_manager.c \
            src/utils/unicode_handler.c \
            src/input/input_handler.c \
 		   src/input/line_edit.c

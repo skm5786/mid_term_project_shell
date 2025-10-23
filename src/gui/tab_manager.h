@@ -1,4 +1,4 @@
-// in src/gui/tab_manager.h
+// in src/gui/tab_manager.h - UPDATED FOR HISTORY
 #ifndef TAB_MANAGER_H
 #define TAB_MANAGER_H
 
@@ -10,7 +10,8 @@
 
 struct TextBuffer;
 struct MultiWatch;
-struct ProcessManager;  // Forward declaration
+struct ProcessManager;
+struct HistoryManager;  // Forward declaration for history
 
 typedef struct Tab{
     struct TextBuffer *buffer;
@@ -21,7 +22,8 @@ typedef struct Tab{
     LineEdit *line_edit;
     char working_directory[PATH_MAX];
     void *multiwatch_session;
-    struct ProcessManager *process_manager;  // NEW: Process and job control
+    struct ProcessManager *process_manager;
+    int in_search_mode;  // NEW: Flag for Ctrl+R search mode
 } Tab;
 
 // Tab manager to handle multiple tabs
@@ -29,6 +31,7 @@ typedef struct TabManager{
     Tab tabs[MAX_TABS];
     int active_tab;
     int num_tabs;
+    struct HistoryManager *history;  // NEW: Global history manager
 } TabManager;
 
 // Function Prototypes
@@ -40,9 +43,14 @@ void tab_manager_switch_tab(TabManager *mgr, int tab_index);
 Tab* tab_manager_get_active(TabManager *mgr);
 void tab_manager_execute_command(TabManager *mgr, const char *cmd_str);
 
-// NEW: Signal handling functions
+// Signal handling functions
 void tab_manager_send_sigint(TabManager *mgr);
 void tab_manager_send_sigtstp(TabManager *mgr);
 void tab_manager_check_background_jobs(TabManager *mgr, void (*output_callback)(const char *));
+
+// NEW: History-related functions
+void tab_manager_show_history(TabManager *mgr);
+void tab_manager_enter_search_mode(TabManager *mgr);
+void tab_manager_execute_search(TabManager *mgr, const char *search_term);
 
 #endif // TAB_MANAGER_H

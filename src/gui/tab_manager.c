@@ -1,4 +1,4 @@
-// in src/gui/tab_manager.c
+// in src/gui/tab_manager.c - UPDATED WITH HISTORY SUPPORT (AND ERRORS FIXED)
 
 #include "tab_manager.h"
 #include "x11_render.h"
@@ -8,6 +8,7 @@
 #include "../shell/multiwatch.h"
 #include "../shell/process_manager.h"
 #include "../shell/signal_handler.h"
+#include "../shell/history_manager.h"  // NEW
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,10 +30,16 @@ TabManager* tab_manager_init() {
     mgr->active_tab = -1;
     mgr->num_tabs = 0;
 
+    // NEW: Initialize history manager
+    mgr->history = history_manager_init();
+    if (!mgr->history) {
+        fprintf(stderr, "Warning: Failed to initialize history manager\n");
+    }
+
     // Save the initial working directory at startup.
     if (getcwd(initial_working_directory, sizeof(initial_working_directory)) == NULL) {
         perror("getcwd at init");
-        strcpy(initial_working_directory, "/"); // Fallback to root
+        strcpy(initial_working_directory, "/");
     }
 
     // Create the first tab.
@@ -56,14 +63,12 @@ int tab_manager_create_tab(TabManager *mgr) {
     tab->buffer = text_buffer_init();
     if (!tab->buffer) return -1;
 
-    // Initialize the LineEdit object for the new tab.
     tab->line_edit = line_edit_init();
     if (!tab->line_edit) {
         text_buffer_free(tab->buffer);
         return -1;
     }
 
-    // NEW: Initialize process manager for this tab
     tab->process_manager = process_manager_init();
     if (!tab->process_manager) {
         line_edit_free(tab->line_edit);
@@ -71,13 +76,13 @@ int tab_manager_create_tab(TabManager *mgr) {
         return -1;
     }
 
-    // Set the new tab's working directory to the initial directory.
     strncpy(tab->working_directory, initial_working_directory, PATH_MAX - 1);
     tab->working_directory[PATH_MAX - 1] = '\0';
 
     tab->multiwatch_session = NULL;
     tab->shell_pid = 0;
     tab->active = 1;
+    tab->in_search_mode = 0;  // NEW
 
     mgr->num_tabs++;
     mgr->active_tab = tab_idx;
@@ -89,7 +94,6 @@ void tab_manager_switch_tab(TabManager *mgr, int tab_index) {
     
     mgr->active_tab = tab_index;
     
-    // Change the parent process's CWD to match the new active tab.
     if (chdir(mgr->tabs[tab_index].working_directory) != 0) {
         perror("chdir on tab switch");
     }
@@ -99,19 +103,16 @@ void tab_manager_close_tab(TabManager *mgr, int tab_index) {
     if (!mgr || tab_index < 0 || tab_index >= MAX_TABS || !mgr->tabs[tab_index].active) return;
     Tab *tab = &mgr->tabs[tab_index];
 
-    // Clean up multiWatch if it's running in the closing tab.
     if (tab->multiwatch_session) {
         cleanup_multiwatch((MultiWatch *)tab->multiwatch_session);
         tab->multiwatch_session = NULL;
     }
 
-    // NEW: Clean up process manager
     if (tab->process_manager) {
         process_manager_cleanup(tab->process_manager);
         tab->process_manager = NULL;
     }
 
-    // Free the LineEdit and TextBuffer objects.
     line_edit_free(tab->line_edit);
     text_buffer_free(tab->buffer);
     tab->active = 0;
@@ -120,7 +121,6 @@ void tab_manager_close_tab(TabManager *mgr, int tab_index) {
     if (mgr->num_tabs == 0) {
         mgr->active_tab = -1;
     } else if (mgr->active_tab == tab_index) {
-        // Find the next available tab to make active.
         for (int i = 0; i < MAX_TABS; ++i) {
             if (mgr->tabs[i].active) {
                 tab_manager_switch_tab(mgr, i);
@@ -134,9 +134,6 @@ Tab* tab_manager_get_active(TabManager *mgr) {
     if (!mgr || mgr->num_tabs == 0 || mgr->active_tab < 0) return NULL;
     return &mgr->tabs[mgr->active_tab];
 }
-
-// NEW: Handle Ctrl+C signal
-// Add this debug version to tab_manager_send_sigint() function
 
 // Replace the tab_manager_send_sigint() function in src/gui/tab_manager.c
 
@@ -247,28 +244,22 @@ void tab_manager_send_sigint(TabManager *mgr) {
     printf("[SIGINT] Cleanup complete, ^C added to buffer\n");
     fflush(stdout);
 }
-// NEW: Handle Ctrl+Z signal
+
 void tab_manager_send_sigtstp(TabManager *mgr) {
     Tab *tab = tab_manager_get_active(mgr);
     if (!tab || !tab->process_manager) return;
     
     ProcessInfo *fg_proc = process_manager_get_foreground(tab->process_manager);
     if (fg_proc) {
-        // Send SIGTSTP to the entire process group
         kill(-fg_proc->pgid, SIGTSTP);
         
-        // Wait for the process to stop
         int status;
         pid_t result = waitpid(fg_proc->pid, &status, WUNTRACED);
         
         if (result == fg_proc->pid && WIFSTOPPED(status)) {
-            // Process was stopped, move it to background
             int job_id = process_manager_move_to_background(tab->process_manager);
-            
-            // Take terminal control back
             signal_handler_take_terminal_back();
             
-            // Print notification
             char notification[1024];
             snprintf(notification, sizeof(notification),
                      "\n[%d]+ Stopped                 %s\n",
@@ -278,12 +269,81 @@ void tab_manager_send_sigtstp(TabManager *mgr) {
     }
 }
 
-// NEW: Check for completed background jobs
 void tab_manager_check_background_jobs(TabManager *mgr, void (*output_callback)(const char *)) {
     Tab *tab = tab_manager_get_active(mgr);
     if (!tab || !tab->process_manager) return;
     
     process_manager_check_background_jobs(tab->process_manager, output_callback);
+}
+
+// NEW: Show history command
+void tab_manager_show_history(TabManager *mgr) {
+    Tab *tab = tab_manager_get_active(mgr);
+    if (!tab || !mgr->history) return;
+    
+    char *output = malloc(102400); // ~100KB for history output
+    if (!output) {
+        text_buffer_append(tab->buffer, "Error: Out of memory\n");
+        return;
+    }
+    
+    history_manager_get_recent(mgr->history, output, 102400, HISTORY_DISPLAY_SIZE);
+    text_buffer_append(tab->buffer, output);
+    free(output);
+}
+
+// NEW: Enter search mode (Ctrl+R)
+void tab_manager_enter_search_mode(TabManager *mgr) {
+    Tab *tab = tab_manager_get_active(mgr);
+    if (!tab) return;
+    
+    tab->in_search_mode = 1;
+    line_edit_clear(tab->line_edit);
+    text_buffer_append(tab->buffer, "\nEnter search term: ");
+}
+
+// NEW: Execute history search
+void tab_manager_execute_search(TabManager *mgr, const char *search_term) {
+    Tab *tab = tab_manager_get_active(mgr);
+    if (!tab || !mgr->history) return;
+    
+    tab->in_search_mode = 0;
+    
+    // Show what user searched for
+    text_buffer_append(tab->buffer, search_term);
+    text_buffer_append(tab->buffer, "\n");
+    
+    if (strlen(search_term) == 0) {
+        text_buffer_append(tab->buffer, "No search term entered.\n");
+        return;
+    }
+    
+    // Try exact match first
+    char exact_result[MAX_COMMAND_LENGTH];
+    if (history_manager_search_exact(mgr->history, search_term, 
+                                     exact_result, sizeof(exact_result))) {
+        text_buffer_append(tab->buffer, "[Exact match found]\n");
+        text_buffer_append(tab->buffer, exact_result);
+        text_buffer_append(tab->buffer, "\n");
+        return;
+    }
+    
+    // No exact match, try fuzzy search
+    HistorySearchResult results[MAX_SEARCH_RESULTS];
+    int num_results = history_manager_search_fuzzy(mgr->history, search_term,
+                                                    results, MAX_SEARCH_RESULTS);
+    
+    if (num_results > 0) {
+        char *output = malloc(51200); // 50KB for search results
+        if (output) {
+            format_search_results(results, num_results, output, 51200);
+            text_buffer_append(tab->buffer, "[Fuzzy matches found]\n");
+            text_buffer_append(tab->buffer, output);
+            free(output);
+        }
+    } else {
+        text_buffer_append(tab->buffer, "No match for search term in history\n");
+    }
 }
 
 void tab_manager_execute_command(TabManager *mgr, const char *cmd_str) {
@@ -329,20 +389,23 @@ void tab_manager_execute_command(TabManager *mgr, const char *cmd_str) {
         if (cmd.argc > 0 && strcmp(cmd.args[0], "cd") == 0) {
             builtin_cd(&cmd);
         } else if (cmd.argc > 0) {
-            // NEW: Execute with process management
+            // NEW: Execute with process management - NON-BLOCKING VERSION
             if (has_pipe(cmd_to_exec)) {
                 Pipeline *p = parse_pipeline(cmd_to_exec);
+                // ** FIX: Call the correct function **
                 output = execute_pipeline_with_signals(p, tab->process_manager, cmd_to_exec);
                 free_pipeline(p);
             } else {
+                // ** FIX: Call the correct function **
                 output = execute_command_with_signals(&cmd, &redir_info, 
-                                                     tab->process_manager, cmd_to_exec);
+                                              tab->process_manager, cmd_to_exec);
             }
         }
         
         free_command(&cmd);
         cleanup_redirect_info(&redir_info);
         
+        // Output will be NULL for async commands (collected later)
         if (output) {
             text_buffer_append(tab->buffer, output);
             free(output);
@@ -361,8 +424,53 @@ void tab_manager_execute_command(TabManager *mgr, const char *cmd_str) {
     chdir(saved_cwd);
 }
 
+// NEW: Check if foreground command has output ready and collect it
+void tab_manager_collect_command_output(TabManager *mgr) {
+    Tab *tab = tab_manager_get_active(mgr);
+    if (!tab || !tab->process_manager) return;
+    
+    ProcessInfo *fg_proc = process_manager_get_foreground(tab->process_manager);
+    if (!fg_proc) return;
+    
+    // Check if process has completed
+    int status;
+    pid_t result = waitpid(fg_proc->pid, &status, WNOHANG | WUNTRACED);
+    
+    if (result == fg_proc->pid) {
+        if (WIFSTOPPED(status)) {
+            // Process was stopped (Ctrl+Z)
+            printf("[COLLECT] Process %d stopped\n", fg_proc->pid);
+            fflush(stdout);
+            
+            int job_id = process_manager_move_to_background(tab->process_manager);
+            signal_handler_take_terminal_back();
+            
+            char notification[1024];
+            snprintf(notification, sizeof(notification),
+                     "\n[%d]+ Stopped                 %s\n",
+                     job_id, fg_proc->command);
+            text_buffer_append(tab->buffer, notification);
+        } else if (WIFEXITED(status) || WIFSIGNALED(status)) {
+            // Process exited or was killed
+            printf("[COLLECT] Process %d terminated\n", fg_proc->pid);
+            fflush(stdout);
+            
+            // TODO: Collect any remaining output from the pipe
+            // For now, just clean up
+            process_manager_clear_foreground(tab->process_manager);
+            signal_handler_take_terminal_back();
+        }
+    }
+}
 void tab_manager_cleanup(TabManager *mgr) {
     if (!mgr) return;
+
+    // NEW: Clean up history manager
+    if (mgr->history) {
+        history_manager_cleanup(mgr->history);
+        mgr->history = NULL;
+    }
+
     for (int i = 0; i < MAX_TABS; i++) {
         if (mgr->tabs[i].active) {
             tab_manager_close_tab(mgr, i);
