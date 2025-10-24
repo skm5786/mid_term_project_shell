@@ -67,6 +67,10 @@ int tab_manager_create_tab(TabManager *mgr) {
         text_buffer_free(tab->buffer);
         return -1;
     }
+    
+    tab->in_autocomplete_mode = 0;
+    memset(&tab->autocomplete_result, 0, sizeof(AutocompleteResult));
+    tab->autocomplete_prefix[0] = '\0';
 
     tab->process_manager = process_manager_init();
     if (!tab->process_manager) {
@@ -404,6 +408,183 @@ void tab_manager_execute_command(TabManager *mgr, const char *cmd_str) {
     } else {
         printf("[HISTORY] ERROR: History manager is NULL!\n");
         fflush(stdout);
+    }
+}
+int tab_manager_handle_autocomplete(TabManager *mgr) {
+    Tab *tab = tab_manager_get_active(mgr);
+    if (!tab || tab->multiwatch_session || tab->in_search_mode) {
+        return -1;
+    }
+    
+    printf("[AUTOCOMPLETE] Tab key pressed\n");
+    fflush(stdout);
+    
+    const char *command_line = line_edit_get_line(tab->line_edit);
+    
+    // Extract the last token (the filename prefix to complete)
+    const char *token_start, *token_end;
+    if (autocomplete_extract_last_token(command_line, &token_start, &token_end) != 0) {
+        printf("[AUTOCOMPLETE] No token to complete\n");
+        fflush(stdout);
+        return -1;
+    }
+    
+    // Copy the prefix
+    size_t prefix_len = token_end - token_start;
+    if (prefix_len >= MAX_FILENAME_LENGTH) {
+        printf("[AUTOCOMPLETE] Prefix too long\n");
+        fflush(stdout);
+        return -1;
+    }
+    
+    strncpy(tab->autocomplete_prefix, token_start, prefix_len);
+    tab->autocomplete_prefix[prefix_len] = '\0';
+    
+    printf("[AUTOCOMPLETE] Prefix: '%s'\n", tab->autocomplete_prefix);
+    fflush(stdout);
+    
+    // Find matches
+    if (autocomplete_find_matches(tab->autocomplete_prefix, 
+                                   &tab->autocomplete_result) != 0) {
+        printf("[AUTOCOMPLETE] Error finding matches\n");
+        fflush(stdout);
+        return -1;
+    }
+    
+    printf("[AUTOCOMPLETE] Found %d matches\n", tab->autocomplete_result.num_matches);
+    fflush(stdout);
+    
+    // Handle different cases based on number of matches
+    if (tab->autocomplete_result.num_matches == 0) {
+        // No matches - do nothing
+        printf("[AUTOCOMPLETE] No matches found\n");
+        fflush(stdout);
+        return 0;
+        
+    } else if (tab->autocomplete_result.num_matches == 1) {
+        // Single match - auto-complete immediately
+        printf("[AUTOCOMPLETE] Single match: %s\n", 
+               tab->autocomplete_result.matches[0]);
+        fflush(stdout);
+        
+        char new_command[MAX_INPUT_LENGTH];
+        if (autocomplete_replace_last_token(command_line,
+                                           tab->autocomplete_result.matches[0],
+                                           new_command,
+                                           sizeof(new_command)) == 0) {
+            // Update the line edit buffer
+            line_edit_clear(tab->line_edit);
+            line_edit_insert_string(tab->line_edit, new_command);
+            
+            printf("[AUTOCOMPLETE] Completed to: %s\n", new_command);
+            fflush(stdout);
+        }
+        
+        return 0;
+        
+    } else {
+        // Multiple matches
+        printf("[AUTOCOMPLETE] Multiple matches, common prefix: '%s' (len=%d)\n",
+               tab->autocomplete_result.longest_common_prefix,
+               tab->autocomplete_result.prefix_length);
+        fflush(stdout);
+        
+        // If there's a longer common prefix, complete to that first
+        if (tab->autocomplete_result.prefix_length > (int)prefix_len) {
+            char new_command[MAX_INPUT_LENGTH];
+            if (autocomplete_replace_last_token(command_line,
+                                               tab->autocomplete_result.longest_common_prefix,
+                                               new_command,
+                                               sizeof(new_command)) == 0) {
+                line_edit_clear(tab->line_edit);
+                line_edit_insert_string(tab->line_edit, new_command);
+                
+                printf("[AUTOCOMPLETE] Completed to common prefix: %s\n", new_command);
+                fflush(stdout);
+                return 0;
+            }
+        }
+        
+        // Common prefix is same as what's typed - show selection menu
+        char matches_display[4096];
+        autocomplete_format_matches(&tab->autocomplete_result,
+                                    matches_display,
+                                    sizeof(matches_display));
+        
+        text_buffer_append(tab->buffer, "\n");
+        text_buffer_append(tab->buffer, matches_display);
+        text_buffer_append(tab->buffer, "\nSelect file (1-");
+        
+        char num_str[16];
+        snprintf(num_str, sizeof(num_str), "%d", tab->autocomplete_result.num_matches);
+        text_buffer_append(tab->buffer, num_str);
+        text_buffer_append(tab->buffer, "): ");
+        
+        // Enter autocomplete selection mode
+        tab->in_autocomplete_mode = 1;
+        
+        printf("[AUTOCOMPLETE] Entered selection mode\n");
+        fflush(stdout);
+        
+        return 0;
+    }
+}
+
+// NEW: Handle number selection in autocomplete mode
+int tab_manager_select_autocomplete(TabManager *mgr, int selection) {
+    Tab *tab = tab_manager_get_active(mgr);
+    if (!tab || !tab->in_autocomplete_mode) {
+        return -1;
+    }
+    
+    printf("[AUTOCOMPLETE] Selection: %d\n", selection);
+    fflush(stdout);
+    
+    // Validate selection
+    if (selection < 1 || selection > tab->autocomplete_result.num_matches) {
+        text_buffer_append(tab->buffer, "Invalid selection\n");
+        tab->in_autocomplete_mode = 0;
+        return -1;
+    }
+    
+    // Get the selected filename (convert from 1-based to 0-based)
+    const char *selected_file = tab->autocomplete_result.matches[selection - 1];
+    
+    printf("[AUTOCOMPLETE] Selected file: %s\n", selected_file);
+    fflush(stdout);
+    
+    // Get current command and replace last token
+    const char *current_command = line_edit_get_line(tab->line_edit);
+    char new_command[MAX_INPUT_LENGTH];
+    
+    if (autocomplete_replace_last_token(current_command,
+                                       selected_file,
+                                       new_command,
+                                       sizeof(new_command)) == 0) {
+        // Update the line edit buffer
+        line_edit_clear(tab->line_edit);
+        line_edit_insert_string(tab->line_edit, new_command);
+        
+        printf("[AUTOCOMPLETE] Completed to: %s\n", new_command);
+        fflush(stdout);
+    }
+    
+    // Exit autocomplete mode
+    tab->in_autocomplete_mode = 0;
+    
+    return 0;
+}
+
+// NEW: Cancel autocomplete mode
+void tab_manager_cancel_autocomplete(TabManager *mgr) {
+    Tab *tab = tab_manager_get_active(mgr);
+    if (!tab) return;
+    
+    if (tab->in_autocomplete_mode) {
+        printf("[AUTOCOMPLETE] Cancelled\n");
+        fflush(stdout);
+        text_buffer_append(tab->buffer, "Cancelled\n");
+        tab->in_autocomplete_mode = 0;
     }
 }
 

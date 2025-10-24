@@ -1,8 +1,9 @@
-// src/shell/command_exec.c - COMPLETE VERSION WITH EVENT PROCESSING
+// src/shell/command_exec.c - COMPLETE VERSION WITH BUILT-IN ECHO
 
 #include "command_exec.h"
 #include "process_manager.h"
 #include "signal_handler.h"
+#include "../utils/unicode_handler.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,6 +29,85 @@ int builtin_cd(Command *cmd) {
         if (chdir(cmd->args[1]) != 0) perror("cd");
     }
     return 0;
+}
+
+// Built-in 'echo' command with -e flag support
+static char* builtin_echo(Command *cmd) {
+    if (cmd->argc < 2) {
+        return strdup("\n");
+    }
+    
+    int enable_escapes = 0;
+    int start_index = 1;
+    int suppress_newline = 0;
+    
+    // Parse flags
+    for (int i = 1; i < cmd->argc; i++) {
+        if (strcmp(cmd->args[i], "-e") == 0) {
+            enable_escapes = 1;
+            start_index = i + 1;
+        } else if (strcmp(cmd->args[i], "-n") == 0) {
+            suppress_newline = 1;
+            start_index = i + 1;
+        } else if (strcmp(cmd->args[i], "-ne") == 0 || strcmp(cmd->args[i], "-en") == 0) {
+            enable_escapes = 1;
+            suppress_newline = 1;
+            start_index = i + 1;
+        } else {
+            // First non-flag argument, stop parsing flags
+            break;
+        }
+    }
+    
+    // Allocate buffer for output
+    char *output = malloc(8192);
+    if (!output) return NULL;
+    output[0] = '\0';
+    
+    // Process each argument
+    for (int i = start_index; i < cmd->argc; i++) {
+        if (i > start_index) {
+            strcat(output, " ");  // Space between arguments
+        }
+        
+        if (enable_escapes) {
+            // Process escape sequences
+            char processed[4096];
+            process_escape_sequences(cmd->args[i], processed, sizeof(processed));
+            strcat(output, processed);
+        } else {
+            // No escape processing
+            strcat(output, cmd->args[i]);
+        }
+    }
+    
+    if (!suppress_newline) {
+        strcat(output, "\n");
+    }
+    
+    return output;
+}
+
+// Handle output redirection for built-in commands
+static int handle_builtin_output_redirection(char *output, RedirectInfo *redir_info) {
+    if (!redir_info || redir_info->count == 0) {
+        return 0;  // No redirection
+    }
+    
+    for (int i = 0; i < redir_info->count; i++) {
+        if (redir_info->redirects[i].type == REDIRECT_OUTPUT) {
+            FILE *fp = fopen(redir_info->redirects[i].filename, "w");
+            if (!fp) {
+                perror("fopen");
+                return -1;
+            }
+            fprintf(fp, "%s", output);
+            fclose(fp);
+            return 1;  // Output redirected to file
+        }
+    }
+    
+    return 0;  // No output redirection
 }
 
 // Legacy function - kept for backward compatibility
@@ -99,6 +179,7 @@ char* execute_external_command(Command *cmd, RedirectInfo *redir_info) {
 }
 
 // NEW: Execute command with full signal handling support and event processing
+// NEW: Execute command with full signal handling support and event processing
 char* execute_command_with_signals(Command *cmd, RedirectInfo *redir_info,
                                    struct ProcessManager *pm, const char *cmd_str) {
     if (!cmd || cmd->argc == 0) {
@@ -118,6 +199,22 @@ char* execute_command_with_signals(Command *cmd, RedirectInfo *redir_info,
 
     printf("[EXEC] Forking child process...\n");
     fflush(stdout);
+    if (strcmp(cmd->args[0], "echo") == 0) {
+        char *echo_output = builtin_echo(cmd);
+        if (!echo_output) return NULL;
+        
+        // Handle output redirection
+        int redirected = handle_builtin_output_redirection(echo_output, redir_info);
+        if (redirected == 1) {
+            free(echo_output);
+            return strdup("");  // Output went to file
+        } else if (redirected == -1) {
+            free(echo_output);
+            return strdup("[Error: could not open output file]\n");
+        }
+        
+        return echo_output;  // Return output for display
+    }
 
     pid_t pid = fork();
     if (pid == -1) { 
@@ -397,12 +494,28 @@ char* execute_command_with_signals(Command *cmd, RedirectInfo *redir_info,
 char* execute_command(Command *cmd, RedirectInfo *redir_info) {
     if (cmd->argc == 0) return NULL;
     
-    // Check for built-ins first
+    // Check for built-in echo
+    if (strcmp(cmd->args[0], "echo") == 0) {
+        char *echo_output = builtin_echo(cmd);
+        if (!echo_output) return NULL;
+        
+        int redirected = handle_builtin_output_redirection(echo_output, redir_info);
+        if (redirected == 1) {
+            free(echo_output);
+            return strdup("");
+        } else if (redirected == -1) {
+            free(echo_output);
+            return strdup("[Error: could not open output file]\n");
+        }
+        
+        return echo_output;
+    }
+    
+    // Check for built-in cd
     if (strcmp(cmd->args[0], "cd") == 0) {
         builtin_cd(cmd);
         return strdup("");
     }
     
-    // Execute as external command without signal handling
     return execute_external_command(cmd, redir_info);
 }

@@ -19,8 +19,9 @@ SOURCES := src/main.c \
            src/shell/history_manager.c \
            src/utils/unicode_handler.c \
            src/input/input_handler.c \
-		   src/input/line_edit.c
-
+		   src/input/line_edit.c \
+		   src/input/autocomplete.c
+		   
 OBJECTS := $(patsubst src/%.c,$(OBJDIR)/%.o,$(SOURCES))
 
 # --- Compiler and Flags ---

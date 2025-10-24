@@ -1,0 +1,6 @@
+total 32
+drwxr-xr-x@  8 sumit  staff    256 Oct 21 23:03 gui
+drwxr-xr-x@  8 sumit  staff    256 Oct 24 16:29 input
+-rw-r--r--@  1 sumit  staff  14729 Oct 24 22:52 main.c
+drwxr-xr-x@ 18 sumit  staff    576 Oct 23 23:14 shell
+drwxr-xr-x@  4 sumit  staff    128 Oct 16 22:45 utils

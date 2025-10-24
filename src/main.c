@@ -1,4 +1,4 @@
-// in src/main.c - UPDATED WITH HISTORY SEARCH SUPPORT
+// in src/main.c - UPDATED WITH SCROLLING SUPPORT
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,6 +49,19 @@ void handle_mouse_click(XButtonEvent *event, TabManager *mgr, X11Context *ctx) {
     }
 }
 
+// NEW: Handle mouse scroll events
+void handle_mouse_scroll(XButtonEvent *event, TabManager *mgr, X11Context *ctx) {
+    Tab *active_tab = tab_manager_get_active(mgr);
+    if (!active_tab) return;
+    
+    // Button 4 = Scroll Up, Button 5 = Scroll Down
+    if (event->button == 4) {
+        text_buffer_scroll_up(active_tab->buffer, 3);  // Scroll up 3 lines
+    } else if (event->button == 5) {
+        text_buffer_scroll_down(active_tab->buffer, 3);  // Scroll down 3 lines
+    }
+}
+
 void handle_copy_to_clipboard(X11Context *ctx, const char *text_to_copy) {
     if (text_to_copy && strlen(text_to_copy) > 0) {
         if (clipboard_content) free(clipboard_content);
@@ -75,42 +88,46 @@ void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X
     int len = Xutf8LookupString(input_state->xic, &event->xkey, buffer, sizeof(buffer) - 1, &keysym, &status);
     buffer[len] = '\0';
 
-    printf("[KEYPRESS] keysym=0x%lx, state=0x%x, ControlMask=%d\n", 
-           keysym, event->xkey.state, !!(event->xkey.state & ControlMask));
-    fflush(stdout);
+    // NEW: Handle Page Up / Page Down for scrolling
+    if (keysym == XK_Page_Up) {
+        int visible_lines = text_buffer_get_visible_lines(ctx);
+        text_buffer_scroll_up(active_tab->buffer, visible_lines - 1);
+        return;
+    }
+    if (keysym == XK_Page_Down) {
+        int visible_lines = text_buffer_get_visible_lines(ctx);
+        text_buffer_scroll_down(active_tab->buffer, visible_lines - 1);
+        return;
+    }
+    
+    // NEW: Shift+Up/Down for line-by-line scrolling
+    if ((event->xkey.state & ShiftMask) && keysym == XK_Up) {
+        text_buffer_scroll_up(active_tab->buffer, 1);
+        return;
+    }
+    if ((event->xkey.state & ShiftMask) && keysym == XK_Down) {
+        text_buffer_scroll_down(active_tab->buffer, 1);
+        return;
+    }
 
     // Handle high-priority interrupts first
     if (event->xkey.state & ControlMask) {
         if (keysym == XK_c) {
-            printf("[CTRL+C] Detected! multiwatch=%p, process_manager=%p, fg_process=%p\n",
-                   active_tab->multiwatch_session,
-                   active_tab->process_manager,
-                   active_tab->process_manager ? 
-                       process_manager_get_foreground(active_tab->process_manager) : NULL);
-            fflush(stdout);
-            
             if (active_tab->multiwatch_session) {
                 cleanup_multiwatch((MultiWatch *)active_tab->multiwatch_session);
                 active_tab->multiwatch_session = NULL;
                 line_edit_clear(le);
                 text_buffer_append(active_tab->buffer, "\n[multiWatch stopped.]\n");
-                printf("[CTRL+C] Stopped multiwatch\n");
             } else if (active_tab->process_manager && 
                        process_manager_get_foreground(active_tab->process_manager)) {
-                printf("[CTRL+C] Sending SIGINT to foreground process\n");
-                fflush(stdout);
                 tab_manager_send_sigint(mgr);
             } else {
-                printf("[CTRL+C] No foreground process, treating as copy\n");
-                fflush(stdout);
                 handle_copy_to_clipboard(ctx, line_edit_get_line(le));
             }
             return;
         }
         
         if (keysym == XK_z) {
-            printf("[CTRL+Z] Detected!\n");
-            fflush(stdout);
             if (active_tab->process_manager && 
                 process_manager_get_foreground(active_tab->process_manager)) {
                 tab_manager_send_sigtstp(mgr);
@@ -118,13 +135,21 @@ void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X
             return;
         }
         
-        // NEW: Ctrl+R for history search
+        // Ctrl+R for history search
         if (keysym == XK_r) {
-            printf("[CTRL+R] History search activated\n");
-            fflush(stdout);
             if (!active_tab->multiwatch_session && !active_tab->in_search_mode) {
                 tab_manager_enter_search_mode(mgr);
             }
+            return;
+        }
+        
+        // NEW: Ctrl+Home/End for jump to top/bottom
+        if (keysym == XK_Home) {
+            text_buffer_scroll_up(active_tab->buffer, MAX_LINES);
+            return;
+        }
+        if (keysym == XK_End) {
+            text_buffer_scroll_to_bottom(active_tab->buffer);
             return;
         }
         
@@ -157,11 +182,7 @@ void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X
     // Standard key handling
     switch (keysym) {
         case XK_Return:
-            printf("[ENTER] Executing command: %s\n", line_edit_get_line(le));
-            fflush(stdout);
             tab_manager_execute_command(mgr, line_edit_get_line(le));
-            printf("[ENTER] Command execution returned\n");
-            fflush(stdout);
             break;
         case XK_BackSpace:
             line_edit_delete_char_before_cursor(le);
@@ -184,94 +205,38 @@ static X11Context *g_ctx = NULL;
 static TabManager *g_tab_mgr = NULL;
 static InputState *g_input_state = NULL;
 
-// Forward declaration
+// Forward declarations
 void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X11Context *ctx);
 void handle_mouse_click(XButtonEvent *event, TabManager *mgr, X11Context *ctx);
+void handle_mouse_scroll(XButtonEvent *event, TabManager *mgr, X11Context *ctx);
 
-
-
-// NEW: Function to process pending X11 events (called from command execution)
+// Function to process pending X11 events (called from command execution)
 int process_pending_events(void) {
     if (!g_ctx || !g_tab_mgr || !g_input_state) return 0;
     
-    int events_processed = 0;
-    
-    // Process ALL pending X11 events
     while (XPending(g_ctx->display)) {
         XEvent event;
         XNextEvent(g_ctx->display, &event);
         if (XFilterEvent(&event, None)) continue;
 
-        events_processed++;
-        
         switch (event.type) {
             case KeyPress:
                 process_keypress(&event, g_tab_mgr, g_input_state, g_ctx);
                 break;
             case ButtonPress:
-                handle_mouse_click(&event.xbutton, g_tab_mgr, g_ctx);
-                break;
-            case ClientMessage: {
-                Atom wm_delete_window = XInternAtom(g_ctx->display, "WM_DELETE_WINDOW", False);
-                if ((Atom)event.xclient.data.l[0] == wm_delete_window) {
-                    // Window close requested - this should be handled by main loop
-                    return 1; // Signal to exit
+                if (event.xbutton.button == 4 || event.xbutton.button == 5) {
+                    handle_mouse_scroll(&event.xbutton, g_tab_mgr, g_ctx);
+                } else {
+                    handle_mouse_click(&event.xbutton, g_tab_mgr, g_ctx);
                 }
                 break;
-            }
-            // Process other important events during command execution
-            case SelectionNotify: {
-                if (event.xselection.property == None) break;
-                Atom type;
-                int format;
-                unsigned long nitems, bytes_after;
-                unsigned char *data = NULL;
-                if (XGetWindowProperty(g_ctx->display, g_ctx->window, event.xselection.property, 0, 4096, False, AnyPropertyType, &type, &format, &nitems, &bytes_after, &data) == Success) {
-                    if (data && g_tab_mgr) {
-                        Tab *active_tab = tab_manager_get_active(g_tab_mgr);
-                        if (active_tab && !active_tab->multiwatch_session) {
-                            line_edit_insert_string(active_tab->line_edit, (char *)data);
-                        }
-                    }
-                    if (data) XFree(data);
-                }
-                break;
-            }
-            case SelectionRequest: {
-                XSelectionRequestEvent *req = &event.xselectionrequest;
-                if (req->selection == XInternAtom(g_ctx->display, "CLIPBOARD", False)) {
-                    XSelectionEvent sev = {0};
-                    sev.type = SelectionNotify;
-                    sev.display = req->display;
-                    sev.requestor = req->requestor;
-                    sev.selection = req->selection;
-                    sev.target = req->target;
-                    sev.property = req->property;
-                    sev.time = req->time;
-                    
-                    Atom utf8_atom = XInternAtom(g_ctx->display, "UTF8_STRING", True);
-                    if (sev.target == utf8_atom && clipboard_content) {
-                        XChangeProperty(sev.display, sev.requestor, sev.property, utf8_atom, 8, PropModeReplace, (unsigned char *)clipboard_content, strlen(clipboard_content));
-                    } else {
-                        sev.property = None;
-                    }
-                    XSendEvent(g_ctx->display, sev.requestor, True, NoEventMask, (XEvent *)&sev);
-                }
-                break;
-            }
         }
     }
     
-    if (events_processed > 0) {
-        printf("[EVENTS] Processed %d events during command execution\n", events_processed);
-        fflush(stdout);
-    }
-    
-    return 0; // Return 0 for continue, 1 for exit
+    return 0;
 }
 
 int main(void) {
-    // Redirect stdout/stderr to files for debugging
     FILE *debug_out = fopen("/tmp/myterm_debug.log", "w");
     if (debug_out) {
         setvbuf(debug_out, NULL, _IONBF, 0);
@@ -294,13 +259,6 @@ int main(void) {
     }
     printf("Signal handlers initialized\n");
     fflush(stdout);
-    
-    // CRITICAL: Ensure we're in our own process group
-    // This prevents terminal signals from affecting the GUI
-    pid_t my_pid = getpid();
-    pid_t my_pgid = getpgrp();
-    printf("[MAIN] GUI Process: PID=%d, PGID=%d\n", my_pid, my_pgid);
-    fflush(stdout);
 
     X11Context *ctx = x11_init("MyTerm");
     TabManager *tab_mgr = tab_manager_init();
@@ -310,13 +268,11 @@ int main(void) {
         return 1;
     }
 
-    // Set global pointers for event processing callback
     g_ctx = ctx;
     g_tab_mgr = tab_mgr;
     g_input_state = input_state;
     g_tab_mgr_for_callback = tab_mgr;
 
-    // Register the event processor callback
     extern void set_event_processor_callback(int (*callback)(void));
     set_event_processor_callback(process_pending_events);
 
@@ -330,7 +286,6 @@ int main(void) {
     while (running) {
         Tab *active_tab = tab_manager_get_active(tab_mgr);
 
-        // --- POLLING LOGIC ---
         if (active_tab && active_tab->multiwatch_session) {
             multiwatch_poll_output((MultiWatch *)active_tab->multiwatch_session, multiwatch_output_callback);
         }
@@ -339,7 +294,6 @@ int main(void) {
             tab_manager_check_background_jobs(tab_mgr, background_job_callback);
         }
         
-        // Process all pending X11 events
         while (XPending(ctx->display)) {
             XEvent event;
             XNextEvent(ctx->display, &event);
@@ -350,7 +304,12 @@ int main(void) {
                     process_keypress(&event, tab_mgr, input_state, ctx);
                     break;
                 case ButtonPress:
-                    handle_mouse_click(&event.xbutton, tab_mgr, ctx);
+                    // NEW: Handle scroll wheel
+                    if (event.xbutton.button == 4 || event.xbutton.button == 5) {
+                        handle_mouse_scroll(&event.xbutton, tab_mgr, ctx);
+                    } else {
+                        handle_mouse_click(&event.xbutton, tab_mgr, ctx);
+                    }
                     break;
                 case ClientMessage:
                     if ((Atom)event.xclient.data.l[0] == wm_delete_window) running = 0;
@@ -396,29 +355,35 @@ int main(void) {
         
         if (tab_mgr->num_tabs == 0) running = 0;
         
-        // --- RENDER LOGIC ---
         if (active_tab) {
             render_tabs(ctx, tab_mgr);
             render_text_buffer(ctx, active_tab->buffer);
 
             const char *line = line_edit_get_line(active_tab->line_edit);
             int font_height = ctx->font->ascent + ctx->font->descent;
-            int line_y = TAB_BAR_HEIGHT + (active_tab->buffer->line_count * font_height) + ctx->font->ascent;
             
-            if (!active_tab->multiwatch_session) {
+            // Only show input prompt if at bottom and not in multiwatch
+            if (!active_tab->multiwatch_session && active_tab->buffer->scroll_offset == 0) {
+                int visible_lines = text_buffer_get_visible_lines(ctx);
+                int display_line = active_tab->buffer->cursor_line;
+                int start_line = active_tab->buffer->line_count - visible_lines;
+                if (start_line < 0) start_line = 0;
+                
+                int line_y = TAB_BAR_HEIGHT + ((display_line - start_line) * font_height) + ctx->font->ascent;
+                
                 XDrawString(ctx->display, ctx->window, ctx->gc, 10, line_y, "$ ", 2);
                 XDrawString(ctx->display, ctx->window, ctx->gc, 10 + XTextWidth(ctx->font, "$ ", 2), line_y, line, strlen(line));
             
                 int cursor_x = 10 + XTextWidth(ctx->font, "$ ", 2) +
                                XTextWidth(ctx->font, line, active_tab->line_edit->cursor_pos);
-                int cursor_y = TAB_BAR_HEIGHT + (active_tab->buffer->line_count * font_height);
+                int cursor_y = TAB_BAR_HEIGHT + ((display_line - start_line) * font_height);
                 XFillRectangle(ctx->display, ctx->window, ctx->gc, cursor_x, cursor_y, 8, font_height);
             }
             
             XFlush(ctx->display);
         }
 
-        usleep(1000); // Reduce sleep time for better responsiveness
+        usleep(10000);
     }
 
     printf("Cleaning up...\n");
