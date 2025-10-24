@@ -41,7 +41,7 @@ int signal_handler_init(void) {
     struct sigaction sa_chld;
     sa_chld.sa_handler = sigchld_handler;
     sigemptyset(&sa_chld.sa_mask);
-    sa_chld.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+    sa_chld.sa_flags = SA_RESTART;
     
     if (sigaction(SIGCHLD, &sa_chld, NULL) == -1) {
         perror("sigaction SIGCHLD");

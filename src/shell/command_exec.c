@@ -182,8 +182,8 @@ char* execute_command_with_signals(Command *cmd, RedirectInfo *redir_info,
         }
 
         // Execute the command
-        printf("[CHILD] Executing: %s\n", cmd->args[0]);
-        fflush(stdout);
+        // printf("[CHILD] Executing: %s\n", cmd->args[0]);
+        // fflush(stdout);
         
         execvp(cmd->args[0], cmd->args);
         
