@@ -184,23 +184,25 @@ void tab_manager_send_sigtstp(TabManager *mgr) {
     if (!tab || !tab->process_manager) return;
     
     ProcessInfo *fg_proc = process_manager_get_foreground(tab->process_manager);
-    if (fg_proc) {
-        kill(-fg_proc->pgid, SIGTSTP);
-        
-        int status;
-        pid_t result = waitpid(fg_proc->pid, &status, WUNTRACED);
-        
-        if (result == fg_proc->pid && WIFSTOPPED(status)) {
-            int job_id = process_manager_move_to_background(tab->process_manager);
-            signal_handler_take_terminal_back();
-            
-            char notification[1024];
-            snprintf(notification, sizeof(notification),
-                     "\n[%d]+ Stopped                 %s\n",
-                     job_id, fg_proc->command);
-            text_buffer_append(tab->buffer, notification);
-        }
+    if (!fg_proc) return;
+    
+    printf("[SIGTSTP] Sending SIGTSTP to PGID %d (PID %d)\n", fg_proc->pgid, fg_proc->pid);
+    fflush(stdout);
+    
+    // Send SIGTSTP to the process group
+    if (kill(-fg_proc->pgid, SIGTSTP) == -1) {
+        perror("kill SIGTSTP");
+        text_buffer_append(tab->buffer, "^Z\n");
+        process_manager_clear_foreground(tab->process_manager);
+        signal_handler_take_terminal_back();
+        return;
     }
+    
+    printf("[SIGTSTP] Signal sent successfully\n");
+    fflush(stdout);
+    
+    // The stopped process will be handled by execute_command_with_signals
+    // Just send the signal here - the rest will be handled when waitpid detects WIFSTOPPED
 }
 
 void tab_manager_check_background_jobs(TabManager *mgr, void (*output_callback)(const char *)) {
@@ -373,10 +375,16 @@ void tab_manager_execute_command(TabManager *mgr, const char *cmd_str) {
         }
     }
     
+    printf("[EXECUTE] Command execution completed, cleaning up\n");
+    fflush(stdout);
+    
     free(cmd_to_exec);
     line_edit_clear(tab->line_edit);
     getcwd(tab->working_directory, sizeof(tab->working_directory));
     chdir(saved_cwd);
+    
+    printf("[EXECUTE] Tab manager cleanup completed, ready for next input\n");
+    fflush(stdout);
     
     // CRITICAL: Use original_cmd (not cmd_str which may be modified)
     if (mgr->history) {

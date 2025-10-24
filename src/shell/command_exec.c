@@ -182,9 +182,6 @@ char* execute_command_with_signals(Command *cmd, RedirectInfo *redir_info,
         }
 
         // Execute the command
-        // printf("[CHILD] Executing: %s\n", cmd->args[0]);
-        // fflush(stdout);
-        
         execvp(cmd->args[0], cmd->args);
         
         // If we get here, exec failed
@@ -237,6 +234,7 @@ char* execute_command_with_signals(Command *cmd, RedirectInfo *redir_info,
     
     int process_exited = 0;
     int eof_reached = 0;
+    int final_status = 0;  // Store the final status for later checking
     
     printf("[PARENT] Starting read loop, waiting for child to exit...\n");
     fflush(stdout);
@@ -282,11 +280,45 @@ char* execute_command_with_signals(Command *cmd, RedirectInfo *redir_info,
         pid_t wait_result = waitpid(pid, &status, WNOHANG | WUNTRACED);
         
         if (wait_result == pid) {
+            // Store the status for later use
+            final_status = status;
+            
             // Process changed state
             if (WIFSTOPPED(status)) {
                 // Process was stopped (Ctrl+Z)
                 printf("[PARENT] Process %d stopped by signal\n", pid);
                 fflush(stdout);
+                
+                // CRITICAL: Move to background and clean up immediately
+                if (pm) {
+                    int job_id = process_manager_move_to_background(pm);
+                    signal_handler_take_terminal_back();
+                    
+                    // Format the notification that will be shown
+                    char notification[1024];
+                    // Get the command from the process manager background job we just added
+                    ProcessInfo *bg_job = process_manager_find_by_pid(pm, pid);
+                    if (bg_job) {
+                        snprintf(notification, sizeof(notification),
+                                 "\n[%d]+ Stopped                 %s\n",
+                                 job_id, bg_job->command);
+                    } else {
+                        snprintf(notification, sizeof(notification),
+                                 "\n[%d]+ Stopped\n", job_id);
+                    }
+                    
+                    // Append ^Z and notification to output buffer
+                    if (output && output_len + strlen("^Z\n") + strlen(notification) < 8191) {
+                        strcat(output, "^Z\n");
+                        strcat(output, notification);
+                        output_len = strlen(output);
+                    }
+                    
+                    printf("[PARENT] Moved to background as job %d\n", job_id);
+                    fflush(stdout);
+                }
+                
+                // Exit the wait loop - process is stopped and moved to background
                 process_exited = 1;
             } else if (WIFEXITED(status)) {
                 // Process exited normally
@@ -324,17 +356,21 @@ char* execute_command_with_signals(Command *cmd, RedirectInfo *redir_info,
     printf("[PARENT] Process exited, reading remaining output...\n");
     fflush(stdout);
     
-    // Read any remaining output after process exits
-    // (Switch back to blocking mode for final read)
-    fcntl(output_pipe[0], F_SETFL, flags & ~O_NONBLOCK);
-    
-    char buffer[256];
-    ssize_t bytes_read;
-    while ((bytes_read = read(output_pipe[0], buffer, sizeof(buffer) - 1)) > 0) {
-        buffer[bytes_read] = '\0';
-        if (output_len + bytes_read < 8191) {
-            strcat(output, buffer);
-            output_len += bytes_read;
+    // Only try to read remaining output if process actually exited (not stopped)
+    // For stopped processes, the pipe is still open and will block
+    if (!WIFSTOPPED(final_status)) {
+        // Read any remaining output after process exits
+        // (Switch back to blocking mode for final read)
+        fcntl(output_pipe[0], F_SETFL, flags & ~O_NONBLOCK);
+        
+        char buffer[256];
+        ssize_t bytes_read;
+        while ((bytes_read = read(output_pipe[0], buffer, sizeof(buffer) - 1)) > 0) {
+            buffer[bytes_read] = '\0';
+            if (output_len + bytes_read < 8191) {
+                strcat(output, buffer);
+                output_len += bytes_read;
+            }
         }
     }
     
@@ -344,10 +380,12 @@ char* execute_command_with_signals(Command *cmd, RedirectInfo *redir_info,
     fflush(stdout);
     
     // Clean up process manager state
-    if (pm) {
+    // Only clear foreground if the process wasn't moved to background
+    if (pm && !WIFSTOPPED(final_status)) {
         process_manager_clear_foreground(pm);
         signal_handler_take_terminal_back();
     }
+    // If WIFSTOPPED, we already moved to background and took terminal back
     
     printf("[PARENT] Command execution complete, returning output (%d bytes)\n", output_len);
     fflush(stdout);

@@ -194,12 +194,16 @@ void handle_mouse_click(XButtonEvent *event, TabManager *mgr, X11Context *ctx);
 int process_pending_events(void) {
     if (!g_ctx || !g_tab_mgr || !g_input_state) return 0;
     
+    int events_processed = 0;
+    
     // Process ALL pending X11 events
     while (XPending(g_ctx->display)) {
         XEvent event;
         XNextEvent(g_ctx->display, &event);
         if (XFilterEvent(&event, None)) continue;
 
+        events_processed++;
+        
         switch (event.type) {
             case KeyPress:
                 process_keypress(&event, g_tab_mgr, g_input_state, g_ctx);
@@ -207,11 +211,63 @@ int process_pending_events(void) {
             case ButtonPress:
                 handle_mouse_click(&event.xbutton, g_tab_mgr, g_ctx);
                 break;
-            // Ignore other events during command execution
+            case ClientMessage: {
+                Atom wm_delete_window = XInternAtom(g_ctx->display, "WM_DELETE_WINDOW", False);
+                if ((Atom)event.xclient.data.l[0] == wm_delete_window) {
+                    // Window close requested - this should be handled by main loop
+                    return 1; // Signal to exit
+                }
+                break;
+            }
+            // Process other important events during command execution
+            case SelectionNotify: {
+                if (event.xselection.property == None) break;
+                Atom type;
+                int format;
+                unsigned long nitems, bytes_after;
+                unsigned char *data = NULL;
+                if (XGetWindowProperty(g_ctx->display, g_ctx->window, event.xselection.property, 0, 4096, False, AnyPropertyType, &type, &format, &nitems, &bytes_after, &data) == Success) {
+                    if (data && g_tab_mgr) {
+                        Tab *active_tab = tab_manager_get_active(g_tab_mgr);
+                        if (active_tab && !active_tab->multiwatch_session) {
+                            line_edit_insert_string(active_tab->line_edit, (char *)data);
+                        }
+                    }
+                    if (data) XFree(data);
+                }
+                break;
+            }
+            case SelectionRequest: {
+                XSelectionRequestEvent *req = &event.xselectionrequest;
+                if (req->selection == XInternAtom(g_ctx->display, "CLIPBOARD", False)) {
+                    XSelectionEvent sev = {0};
+                    sev.type = SelectionNotify;
+                    sev.display = req->display;
+                    sev.requestor = req->requestor;
+                    sev.selection = req->selection;
+                    sev.target = req->target;
+                    sev.property = req->property;
+                    sev.time = req->time;
+                    
+                    Atom utf8_atom = XInternAtom(g_ctx->display, "UTF8_STRING", True);
+                    if (sev.target == utf8_atom && clipboard_content) {
+                        XChangeProperty(sev.display, sev.requestor, sev.property, utf8_atom, 8, PropModeReplace, (unsigned char *)clipboard_content, strlen(clipboard_content));
+                    } else {
+                        sev.property = None;
+                    }
+                    XSendEvent(g_ctx->display, sev.requestor, True, NoEventMask, (XEvent *)&sev);
+                }
+                break;
+            }
         }
     }
     
-    return 0; // Return 0 for now (could return 1 if interrupt requested)
+    if (events_processed > 0) {
+        printf("[EVENTS] Processed %d events during command execution\n", events_processed);
+        fflush(stdout);
+    }
+    
+    return 0; // Return 0 for continue, 1 for exit
 }
 
 int main(void) {
@@ -237,6 +293,13 @@ int main(void) {
         fprintf(stderr, "Warning: Failed to initialize signal handlers.\n");
     }
     printf("Signal handlers initialized\n");
+    fflush(stdout);
+    
+    // CRITICAL: Ensure we're in our own process group
+    // This prevents terminal signals from affecting the GUI
+    pid_t my_pid = getpid();
+    pid_t my_pgid = getpgrp();
+    printf("[MAIN] GUI Process: PID=%d, PGID=%d\n", my_pid, my_pgid);
     fflush(stdout);
 
     X11Context *ctx = x11_init("MyTerm");
@@ -355,7 +418,7 @@ int main(void) {
             XFlush(ctx->display);
         }
 
-        usleep(10000); // Prevent 100% CPU usage
+        usleep(1000); // Reduce sleep time for better responsiveness
     }
 
     printf("Cleaning up...\n");

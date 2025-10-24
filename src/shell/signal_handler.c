@@ -22,13 +22,12 @@ static void sigchld_handler(int sig) {
 }
 
 int signal_handler_init(void) {
-    // Get the shell's process group
-    shell_pgid = getpgrp();
-    
-    // Make shell the process group leader if not already
-    if (shell_pgid != getpid()) {
-        shell_pgid = getpid();
-        setpgid(0, shell_pgid);
+    // CRITICAL FIX: Create a new process group for the GUI shell
+    // This prevents terminal Ctrl+C from affecting the GUI
+    shell_pgid = getpid();
+    if (setpgid(0, shell_pgid) == -1) {
+        perror("setpgid");
+        return -1;
     }
     
     // Get the controlling terminal
@@ -36,6 +35,11 @@ int signal_handler_init(void) {
     
     // Save default terminal modes (may fail in GUI, that's OK)
     tcgetattr(shell_terminal, &shell_tmodes);
+    
+    // CRITICAL FIX: Don't take terminal control immediately
+    // This allows the shell to maintain its prompt when GUI runs in background
+    // Terminal control will be taken only when needed for child processes
+    fprintf(stderr, "[DEBUG] GUI shell created with PGID=%d, not taking terminal control yet\n", shell_pgid);
     
     // Set up SIGCHLD handler - just interrupt, don't reap
     struct sigaction sa_chld;
@@ -63,6 +67,9 @@ int signal_handler_init(void) {
     // Ignore SIGQUIT
     signal(SIGQUIT, SIG_IGN);
     
+    // Handle SIGTERM gracefully (for proper shutdown)
+    signal(SIGTERM, SIG_DFL);
+    
     fprintf(stderr, "[DEBUG] Signal handlers initialized for shell PGID=%d\n", shell_pgid);
     
     return 0;
@@ -81,6 +88,14 @@ void signal_handler_setup_child(void) {
 int signal_handler_give_terminal_to(pid_t pgid) {
     if (shell_terminal < 0) return 0;
     
+    // Check if we're running in the background
+    pid_t current_fg_pgid = tcgetpgrp(shell_terminal);
+    if (current_fg_pgid != shell_pgid) {
+        // We're in the background, can't give terminal control
+        fprintf(stderr, "[DEBUG] GUI running in background, cannot give terminal to PGID %d\n", pgid);
+        return -1;
+    }
+    
     // Give the terminal to the process group
     if (tcsetpgrp(shell_terminal, pgid) == -1) {
         if (errno != ENOTTY && errno != EBADF) {
@@ -97,7 +112,16 @@ int signal_handler_give_terminal_to(pid_t pgid) {
 int signal_handler_take_terminal_back(void) {
     if (shell_terminal < 0) return 0;
     
-    // Take the terminal back
+    // Check if we're running in the background
+    pid_t current_fg_pgid = tcgetpgrp(shell_terminal);
+    if (current_fg_pgid != shell_pgid) {
+        // We're in the background, don't try to take terminal control
+        // This prevents interfering with the parent shell's prompt
+        fprintf(stderr, "[DEBUG] GUI running in background (FG PGID=%d), not taking terminal control\n", current_fg_pgid);
+        return 0;
+    }
+    
+    // Take the terminal back only if we're in the foreground
     if (tcsetpgrp(shell_terminal, shell_pgid) == -1) {
         if (errno != ENOTTY && errno != EBADF) {
             fprintf(stderr, "[DEBUG] tcsetpgrp take back to %d failed: %s\n",
