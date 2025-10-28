@@ -132,7 +132,7 @@ char* execute_pipeline(Pipeline *pipeline) {
 }
 
 // NEW: Execute pipeline with signal handling and non-blocking I/O
-char* execute_pipeline_with_signals(Pipeline *pipeline, struct ProcessManager *pm, 
+char* execute_pipeline_with_signals(Pipeline *pipeline, ProcessManager *pm, 
                                     const char *cmd_str) {
     if (pipeline->num_commands == 0) return NULL;
 

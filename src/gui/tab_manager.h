@@ -6,13 +6,13 @@
 #include <limits.h>
 #include "../input/line_edit.h"
 #include "../input/autocomplete.h"
+#include "../shell/process_manager.h" 
+#include "../shell/history_manager.h"
 
 #define MAX_TABS 10
 
 struct TextBuffer;
 struct MultiWatch;
-struct ProcessManager;
-struct HistoryManager;
 
 typedef struct Tab{
     struct TextBuffer *buffer;
@@ -23,7 +23,7 @@ typedef struct Tab{
     LineEdit *line_edit;
     char working_directory[PATH_MAX];
     void *multiwatch_session;
-    struct ProcessManager *process_manager;
+    ProcessManager *process_manager;
     int in_search_mode;
     
     // NEW: Autocomplete state
@@ -37,7 +37,7 @@ typedef struct TabManager{
     Tab tabs[MAX_TABS];
     int active_tab;
     int num_tabs;
-    struct HistoryManager *history;
+    HistoryManager *history;
 } TabManager;
 
 // Function Prototypes

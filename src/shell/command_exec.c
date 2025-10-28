@@ -181,7 +181,7 @@ char* execute_external_command(Command *cmd, RedirectInfo *redir_info) {
 // NEW: Execute command with full signal handling support and event processing
 // NEW: Execute command with full signal handling support and event processing
 char* execute_command_with_signals(Command *cmd, RedirectInfo *redir_info,
-                                   struct ProcessManager *pm, const char *cmd_str) {
+                                    ProcessManager *pm, const char *cmd_str) {
     if (!cmd || cmd->argc == 0) {
         printf("[EXEC] ERROR: NULL command\n");
         fflush(stdout);

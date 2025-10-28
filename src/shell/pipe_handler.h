@@ -5,12 +5,12 @@
 
 #include "command_parser.h"
 #include "redirect_handler.h"
+#include "process_manager.h"
 #include <sys/types.h>
 
 #define MAX_PIPE_COMMANDS 16
 
 // Forward declaration
-struct ProcessManager;
 
 // A single command within a pipeline, with its own redirections
 typedef struct {
@@ -51,7 +51,7 @@ char* execute_pipeline(Pipeline *pipeline);
  * @param pm Process manager for job control.
  * @param cmd_str Original command string for display.
  */
-char* execute_pipeline_with_signals(Pipeline *pipeline, struct ProcessManager *pm, 
+char* execute_pipeline_with_signals(Pipeline *pipeline, ProcessManager *pm, 
                                     const char *cmd_str);
 
 #endif // PIPE_HANDLER_H
