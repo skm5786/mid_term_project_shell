@@ -1,4 +1,4 @@
-// src/shell/command_exec.c - COMPLETE VERSION WITH BUILT-IN ECHO
+// src/shell/command_exec.c - COMPLETE VERSION WITH INTERACTIVE INPUT SUPPORT
 
 #include "command_exec.h"
 #include "process_manager.h"
@@ -179,9 +179,9 @@ char* execute_external_command(Command *cmd, RedirectInfo *redir_info) {
 }
 
 // NEW: Execute command with full signal handling support and event processing
-// NEW: Execute command with full signal handling support and event processing
 char* execute_command_with_signals(Command *cmd, RedirectInfo *redir_info,
-                                    ProcessManager *pm, const char *cmd_str) {
+                                    ProcessManager *pm, const char *cmd_str,
+                                    int *interactive_fd) {
     if (!cmd || cmd->argc == 0) {
         printf("[EXEC] ERROR: NULL command\n");
         fflush(stdout);
@@ -216,11 +216,36 @@ char* execute_command_with_signals(Command *cmd, RedirectInfo *redir_info,
         return echo_output;  // Return output for display
     }
 
+    // [NEW] Setup Input Pipe Logic for interactive commands
+    int input_pipe[2];
+    int use_input_pipe = 0;
+    
+    // Check if user is already redirecting input (e.g., < file.txt)
+    int has_input_redir = 0;
+    if (redir_info) {
+        for (int i = 0; i < redir_info->count; i++) {
+            if (redir_info->redirects[i].type == REDIRECT_INPUT) has_input_redir = 1;
+        }
+    }
+
+    // If no file input, create a pipe so the GUI can send input
+    if (!has_input_redir) {
+        if (pipe(input_pipe) == -1) {
+            perror("input pipe");
+        } else {
+            use_input_pipe = 1;
+        }
+    }
+
     pid_t pid = fork();
     if (pid == -1) { 
         perror("fork"); 
         close(output_pipe[0]);
         close(output_pipe[1]);
+        if (use_input_pipe) {
+            close(input_pipe[0]);
+            close(input_pipe[1]);
+        }
         return NULL; 
     }
 
@@ -244,6 +269,13 @@ char* execute_command_with_signals(Command *cmd, RedirectInfo *redir_info,
         // Restore default signal handlers
         signal_handler_setup_child();
         
+        // [NEW] Connect Input Pipe
+        if (use_input_pipe) {
+            close(input_pipe[1]); // Close write end
+            dup2(input_pipe[0], STDIN_FILENO); // Read from pipe as STDIN
+            close(input_pipe[0]);
+        }
+
         // Set up output redirection
         close(output_pipe[0]);
         dup2(output_pipe[1], STDOUT_FILENO);
@@ -254,6 +286,7 @@ char* execute_command_with_signals(Command *cmd, RedirectInfo *redir_info,
         for (int i = 0; i < redir_info->count; ++i) {
             Redirect *r = &redir_info->redirects[i];
             if (r->type == REDIRECT_INPUT) {
+                // If explicit redirection is used, it overrides our pipe
                 int in_fd = open(r->filename, O_RDONLY);
                 if (in_fd == -1) { 
                     perror("[CHILD] open input"); 
@@ -291,6 +324,16 @@ char* execute_command_with_signals(Command *cmd, RedirectInfo *redir_info,
     // ============================================
     
     close(output_pipe[1]);
+
+    // [NEW] Configure Input Pipe for Parent
+    if (use_input_pipe) {
+        close(input_pipe[0]); // Close read end
+        if (interactive_fd) {
+            *interactive_fd = input_pipe[1]; // Save write end for main.c
+        } else {
+            close(input_pipe[1]); // Safety if pointer is NULL
+        }
+    }
     
     // Set child's process group (parent side)
     pid_t child_pgid = pid;
@@ -315,6 +358,10 @@ char* execute_command_with_signals(Command *cmd, RedirectInfo *redir_info,
     if (!output) {
         perror("[PARENT] malloc");
         close(output_pipe[0]);
+        if (use_input_pipe && interactive_fd && *interactive_fd != -1) {
+            close(*interactive_fd);
+            *interactive_fd = -1;
+        }
         waitpid(pid, NULL, 0);
         if (pm) {
             process_manager_clear_foreground(pm);
@@ -325,7 +372,7 @@ char* execute_command_with_signals(Command *cmd, RedirectInfo *redir_info,
     output[0] = '\0';
     int output_len = 0;
     
-    // Make pipe non-blocking for better responsiveness
+    // Make output pipe non-blocking for better responsiveness
     int flags = fcntl(output_pipe[0], F_GETFL, 0);
     fcntl(output_pipe[0], F_SETFL, flags | O_NONBLOCK);
     
@@ -472,6 +519,12 @@ char* execute_command_with_signals(Command *cmd, RedirectInfo *redir_info,
     }
     
     close(output_pipe[0]);
+
+    // [NEW] Cleanup Input Pipe after process finishes
+    if (use_input_pipe && interactive_fd && *interactive_fd != -1) {
+        close(*interactive_fd);
+        *interactive_fd = -1; // Reset so main.c stops trying to write
+    }
     
     printf("[PARENT] Cleaning up, clearing foreground process\n");
     fflush(stdout);
@@ -517,5 +570,6 @@ char* execute_command(Command *cmd, RedirectInfo *redir_info) {
         return strdup("");
     }
     
-    return execute_external_command(cmd, redir_info);
+    // Pass NULL for pm, cmd_str, and interactive_fd for legacy calls
+    return execute_command_with_signals(cmd, redir_info, NULL, "legacy", NULL);
 }

@@ -30,6 +30,7 @@ typedef struct Tab{
     int in_autocomplete_mode;           // Are we showing autocomplete menu?
     AutocompleteResult autocomplete_result;  // Last autocomplete results
     char autocomplete_prefix[MAX_FILENAME_LENGTH];  // Original prefix typed
+    int interactive_fd;
 } Tab;
 
 // Tab manager to handle multiple tabs

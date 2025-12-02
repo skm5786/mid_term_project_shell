@@ -27,7 +27,8 @@ char* execute_command(Command *cmd, RedirectInfo *redir_info);
  * @return The output of the command as a dynamically allocated string.
  */
 char* execute_command_with_signals(Command *cmd, RedirectInfo *redir_info,
-                                    ProcessManager *pm, const char *cmd_str);
+                                    ProcessManager *pm, const char *cmd_str,
+                                    int *interactive_fd);
 void set_event_processor_callback(int (*callback)(void));
 
 /**

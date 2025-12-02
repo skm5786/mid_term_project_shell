@@ -1,0 +1,3 @@
+Program starting. Reading from stdin:
+Line read: ./myprog >output.txt manual text writing
+Program finished.

@@ -1,4 +1,4 @@
-// in src/main.c - UPDATED WITH SCROLLING SUPPORT
+// in src/main.c - FULLY UPDATED WITH RENDERING AND INPUT FIXES
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,16 +49,15 @@ void handle_mouse_click(XButtonEvent *event, TabManager *mgr, X11Context *ctx) {
     }
 }
 
-// NEW: Handle mouse scroll events
 void handle_mouse_scroll(XButtonEvent *event, TabManager *mgr, X11Context *ctx) {
     Tab *active_tab = tab_manager_get_active(mgr);
     if (!active_tab) return;
     
     // Button 4 = Scroll Up, Button 5 = Scroll Down
     if (event->button == 4) {
-        text_buffer_scroll_up(active_tab->buffer, 3);  // Scroll up 3 lines
+        text_buffer_scroll_up(active_tab->buffer, 3);
     } else if (event->button == 5) {
-        text_buffer_scroll_down(active_tab->buffer, 3);  // Scroll down 3 lines
+        text_buffer_scroll_down(active_tab->buffer, 3);
     }
 }
 
@@ -77,6 +76,9 @@ void handle_paste_from_clipboard(X11Context *ctx) {
     XConvertSelection(ctx->display, clipboard_atom, utf8_atom, clipboard_atom, ctx->window, CurrentTime);
 }
 
+// ============================================================================
+//  COMPLETE PROCESS_KEYPRESS FUNCTION
+// ============================================================================
 void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X11Context *ctx) {
     Tab *active_tab = tab_manager_get_active(mgr);
     if (!active_tab) return;
@@ -88,7 +90,41 @@ void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X
     int len = Xutf8LookupString(input_state->xic, &event->xkey, buffer, sizeof(buffer) - 1, &keysym, &status);
     buffer[len] = '\0';
 
-    // NEW: Handle Page Up / Page Down for scrolling
+    // 1. Handle Autocomplete Selection Mode (High Priority)
+    //    If the menu is open, numbers select the file.
+    if (active_tab->in_autocomplete_mode) {
+        if (len > 0 && buffer[0] >= '1' && buffer[0] <= '9') {
+            int selection = buffer[0] - '0';
+            tab_manager_select_autocomplete(mgr, selection);
+        } else {
+            // Any other key (Esc, letters, etc.) cancels the mode
+            tab_manager_cancel_autocomplete(mgr);
+        }
+        return; // Stop processing so we don't insert the number into the shell
+    }
+
+    // 2. Handle Interactive Input Mode (Output Redirection with Manual Input)
+    if (active_tab->interactive_fd != -1) {
+        // If Enter is pressed, send the line to the running program
+        if (keysym == XK_Return) {
+            const char *input_line = line_edit_get_line(le);
+            
+            // Write line + newline to the pipe
+            write(active_tab->interactive_fd, input_line, strlen(input_line));
+            write(active_tab->interactive_fd, "\n", 1);
+            
+            // Visual echo: Show what we sent in the terminal buffer
+            text_buffer_append(active_tab->buffer, input_line);
+            text_buffer_append(active_tab->buffer, "\n");
+            
+            // Clear input line for next input
+            line_edit_clear(le);
+            return; 
+        }
+        // For other keys, fall through to allow normal typing/editing in the buffer
+    }
+
+    // 3. Scrolling Shortcuts
     if (keysym == XK_Page_Up) {
         int visible_lines = text_buffer_get_visible_lines(ctx);
         text_buffer_scroll_up(active_tab->buffer, visible_lines - 1);
@@ -99,8 +135,6 @@ void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X
         text_buffer_scroll_down(active_tab->buffer, visible_lines - 1);
         return;
     }
-    
-    // NEW: Shift+Up/Down for line-by-line scrolling
     if ((event->xkey.state & ShiftMask) && keysym == XK_Up) {
         text_buffer_scroll_up(active_tab->buffer, 1);
         return;
@@ -110,7 +144,7 @@ void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X
         return;
     }
 
-    // Handle high-priority interrupts first
+    // 4. Control Key Shortcuts
     if (event->xkey.state & ControlMask) {
         if (keysym == XK_c) {
             if (active_tab->multiwatch_session) {
@@ -143,7 +177,7 @@ void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X
             return;
         }
         
-        // NEW: Ctrl+Home/End for jump to top/bottom
+        // Jump to top/bottom
         if (keysym == XK_Home) {
             text_buffer_scroll_up(active_tab->buffer, MAX_LINES);
             return;
@@ -153,7 +187,7 @@ void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X
             return;
         }
         
-        // Other global shortcuts
+        // Tab Management
         if (keysym == XK_n) { 
             tab_manager_create_tab(mgr); 
             return; 
@@ -162,37 +196,47 @@ void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X
             tab_manager_close_tab(mgr, mgr->active_tab); 
             return; 
         }
-        if ((event->xkey.state & ShiftMask) && keysym == XK_v) { 
-            handle_paste_from_clipboard(ctx); 
-            return; 
-        }
+        
+        // Line Editing Navigation
+        if (keysym == XK_a) { line_edit_move_to_start(le); return; }
+        if (keysym == XK_e) { line_edit_move_to_end(le); return; }
     }
     
-    // If multiWatch is active, block all other text input
+    // Paste Shortcut
+    if ((event->xkey.state & ShiftMask) && keysym == XK_v && (event->xkey.state & ControlMask)) { 
+        handle_paste_from_clipboard(ctx); 
+        return; 
+    }
+    
+    // Block input if multiWatch is running
     if (active_tab->multiwatch_session) return;
 
-    // Line Editing Controls
-    if (event->xkey.state & ControlMask) {
-        switch (keysym) {
-            case XK_a: line_edit_move_to_start(le); return;
-            case XK_e: line_edit_move_to_end(le); return;
-        }
-    }
-
-    // Standard key handling
+    // 5. Standard Key Handling
     switch (keysym) {
-        case XK_Return:
-            tab_manager_execute_command(mgr, line_edit_get_line(le));
+        case XK_Tab:
+            // Trigger Autocomplete
+            tab_manager_handle_autocomplete(mgr);
             break;
+
+        case XK_Return:
+            // Only execute command if NOT in interactive mode
+            if (active_tab->interactive_fd == -1) {
+                tab_manager_execute_command(mgr, line_edit_get_line(le));
+            }
+            break;
+            
         case XK_BackSpace:
             line_edit_delete_char_before_cursor(le);
             break;
+            
         case XK_Left:
             line_edit_move_left(le);
             break;
+            
         case XK_Right:
             line_edit_move_right(le);
             break;
+            
         default:
             if (len > 0) {
                 line_edit_insert_string(le, buffer);
@@ -204,11 +248,6 @@ void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X
 static X11Context *g_ctx = NULL;
 static TabManager *g_tab_mgr = NULL;
 static InputState *g_input_state = NULL;
-
-// Forward declarations
-void process_keypress(XEvent *event, TabManager *mgr, InputState *input_state, X11Context *ctx);
-void handle_mouse_click(XButtonEvent *event, TabManager *mgr, X11Context *ctx);
-void handle_mouse_scroll(XButtonEvent *event, TabManager *mgr, X11Context *ctx);
 
 // Function to process pending X11 events (called from command execution)
 int process_pending_events(void) {
@@ -232,7 +271,6 @@ int process_pending_events(void) {
                 break;
         }
     }
-    
     return 0;
 }
 
@@ -252,13 +290,9 @@ int main(void) {
         fprintf(stderr, "Warning: could not set locale.\n");
     }
 
-    printf("Initializing signal handlers...\n");
-    fflush(stdout);
     if (signal_handler_init() == -1) {
         fprintf(stderr, "Warning: Failed to initialize signal handlers.\n");
     }
-    printf("Signal handlers initialized\n");
-    fflush(stdout);
 
     X11Context *ctx = x11_init("MyTerm");
     TabManager *tab_mgr = tab_manager_init();
@@ -304,7 +338,6 @@ int main(void) {
                     process_keypress(&event, tab_mgr, input_state, ctx);
                     break;
                 case ButtonPress:
-                    // NEW: Handle scroll wheel
                     if (event.xbutton.button == 4 || event.xbutton.button == 5) {
                         handle_mouse_scroll(&event.xbutton, tab_mgr, ctx);
                     } else {
@@ -362,6 +395,9 @@ int main(void) {
             const char *line = line_edit_get_line(active_tab->line_edit);
             int font_height = ctx->font->ascent + ctx->font->descent;
             
+            // ================================================================
+            // UPDATED RENDERING LOGIC (FIXES OVERLAPPING PROMPT)
+            // ================================================================
             // Only show input prompt if at bottom and not in multiwatch
             if (!active_tab->multiwatch_session && active_tab->buffer->scroll_offset == 0) {
                 int visible_lines = text_buffer_get_visible_lines(ctx);
@@ -371,14 +407,30 @@ int main(void) {
                 
                 int line_y = TAB_BAR_HEIGHT + ((display_line - start_line) * font_height) + ctx->font->ascent;
                 
-                XDrawString(ctx->display, ctx->window, ctx->gc, 10, line_y, "$ ", 2);
-                XDrawString(ctx->display, ctx->window, ctx->gc, 10 + XTextWidth(ctx->font, "$ ", 2), line_y, line, strlen(line));
+                int start_x = 10;
+                
+                // [FIX] Context-aware prompt rendering
+                if (active_tab->in_search_mode || active_tab->in_autocomplete_mode) {
+                    // In these modes, the prompt (e.g., "Enter search term: ") is already written 
+                    // into the text buffer lines. We just need to calculate its width so 
+                    // we can draw the user's input input immediately AFTER it.
+                    char *prompt_line = active_tab->buffer->lines[active_tab->buffer->cursor_line];
+                    start_x += XTextWidth(ctx->font, prompt_line, strlen(prompt_line));
+                } else {
+                    // Standard shell mode: Draw the "$ " prompt manually
+                    XDrawString(ctx->display, ctx->window, ctx->gc, 10, line_y, "$ ", 2);
+                    start_x += XTextWidth(ctx->font, "$ ", 2);
+                }
+                
+                // Draw the user's input (from line_edit) at the calculated position
+                XDrawString(ctx->display, ctx->window, ctx->gc, start_x, line_y, line, strlen(line));
             
-                int cursor_x = 10 + XTextWidth(ctx->font, "$ ", 2) +
-                               XTextWidth(ctx->font, line, active_tab->line_edit->cursor_pos);
+                // Draw Cursor
+                int cursor_x = start_x + XTextWidth(ctx->font, line, active_tab->line_edit->cursor_pos);
                 int cursor_y = TAB_BAR_HEIGHT + ((display_line - start_line) * font_height);
                 XFillRectangle(ctx->display, ctx->window, ctx->gc, cursor_x, cursor_y, 8, font_height);
             }
+            // ================================================================
             
             XFlush(ctx->display);
         }
@@ -386,17 +438,11 @@ int main(void) {
         usleep(10000);
     }
 
-    printf("Cleaning up...\n");
-    fflush(stdout);
-
     if (clipboard_content) free(clipboard_content);
     input_state_cleanup(input_state);
     tab_manager_cleanup(tab_mgr);
     x11_cleanup(ctx);
-    
-    if (debug_out) {
-        fclose(debug_out);
-    }
+    if (debug_out) fclose(debug_out);
     
     return 0;
 }

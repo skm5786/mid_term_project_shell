@@ -1,0 +1,4 @@
+Program starting. Reading from stdin:
+Line read: hello hi world
+Program finished.
+hello world

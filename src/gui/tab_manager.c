@@ -86,6 +86,7 @@ int tab_manager_create_tab(TabManager *mgr) {
     tab->shell_pid = 0;
     tab->active = 1;
     tab->in_search_mode = 0;
+    tab->interactive_fd = -1;
 
     mgr->num_tabs++;
     mgr->active_tab = tab_idx;
@@ -366,7 +367,8 @@ void tab_manager_execute_command(TabManager *mgr, const char *cmd_str) {
                 free_pipeline(p);
             } else {
                 output = execute_command_with_signals(&cmd, &redir_info, 
-                                                     tab->process_manager, cmd_to_exec);
+                                                     tab->process_manager, cmd_to_exec,
+                                                     &tab->interactive_fd);
             }
         }
         
@@ -568,7 +570,7 @@ int tab_manager_select_autocomplete(TabManager *mgr, int selection) {
         printf("[AUTOCOMPLETE] Completed to: %s\n", new_command);
         fflush(stdout);
     }
-    
+    text_buffer_append(tab->buffer, "\n");
     // Exit autocomplete mode
     tab->in_autocomplete_mode = 0;
     

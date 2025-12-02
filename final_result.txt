@@ -1,0 +1,3 @@
+Program starting. Reading from stdin:
+Line read: new line check two
+Program finished.
